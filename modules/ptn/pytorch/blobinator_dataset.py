@@ -8,6 +8,7 @@ from typing import Sequence, TypeAlias
 import cv2 as cv
 import numpy as np
 import pdf2image
+import tensorflow as tf
 import torch
 
 
@@ -60,69 +61,188 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
             shape=(256, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
         )
         self.homographies = [
-            self.generate_homography() for _ in range(len(self.backgrounds))
+            self.sample_homography(shape=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
+            for _ in range(len(self.backgrounds))
         ]
 
-    def generate_homography(self) -> np.ndarray:
-        """
-        Generate a random homography according to the configuration values.
+    def sample_homography(
+        self,
+        shape,
+        perspective=True,
+        scaling=True,
+        rotation=True,
+        translation=True,
+        n_scales=5,
+        n_angles=25,
+        scaling_amplitude=0.1,
+        perspective_amplitude_x=0.1,
+        perspective_amplitude_y=0.1,
+        patch_ratio=0.5,
+        max_angle=np.pi / 2,
+        allow_artifacts=False,
+        translation_overflow=0.0,
+    ):
+        """Sample a random valid homography.
 
-        The configurable values are:
-        - `MAX_ROTATION`: The maximum rotation either clock-wise or counter clockwise in degrees. (Note: the range of
-            rotations is [`-MAX_ROTATION`°, `MAX_ROTATION`°])
-        - `MIN_SCALE`: The smallest possible scaling factor.
-        - `MAX_SCALE`: The largest possible scaling factor.
-        - `MAX_WIGGLE`: The amount points can be wiggled in the x and y direction. This value is a fraction of the
-            shorter sidelength of the blobsheet.
+        **Note:** This function is an adapted version from [SuperPoints](github.com/rpautrat/SuperPoint) homography sampling.
+
+        Computes the homography transformation between a random patch in the original image
+        and a warped projection with the same image size.
+        As in `tf.contrib.image.transform`, it maps the output point (warped patch) to a
+        transformed input point (original patch).
+        The original patch, which is initialized with a simple half-size centered crop, is
+        iteratively projected, scaled, rotated and translated.
+
+        Arguments:
+            shape: A rank-2 `Tensor` specifying the height and width of the original image.
+            perspective: A boolean that enables the perspective and affine transformations.
+            scaling: A boolean that enables the random scaling of the patch.
+            rotation: A boolean that enables the random rotation of the patch.
+            translation: A boolean that enables the random translation of the patch.
+            n_scales: The number of tentative scales that are sampled when scaling.
+            n_angles: The number of tentatives angles that are sampled when rotating.
+            scaling_amplitude: Controls the amount of scale.
+            perspective_amplitude_x: Controls the perspective effect in x direction.
+            perspective_amplitude_y: Controls the perspective effect in y direction.
+            patch_ratio: Controls the size of the patches used to create the homography.
+            max_angle: Maximum angle used in rotations.
+            allow_artifacts: A boolean that enables artifacts when applying the homography.
+            translation_overflow: Amount of border artifacts caused by translation.
+
+        Returns:
+            A `Tensor` of shape `[1, 8]` corresponding to the flattened homography transform.
         """
-        # TODO: Use superpoints
-        scale = np.random.uniform(
-            self.cfg.BLOBINATOR.MIN_SCALE, self.cfg.BLOBINATOR.MAX_SCALE
+
+        # Corners of the output image
+        margin = (1 - patch_ratio) / 2
+        pts1 = margin + tf.constant(
+            [[0, 0], [0, patch_ratio], [patch_ratio, patch_ratio], [patch_ratio, 0]],
+            tf.float32,
         )
-        rotation = (
-            np.random.uniform(
-                -self.cfg.BLOBINATOR.MAX_ROTATION, self.cfg.BLOBINATOR.MAX_ROTATION
+        # Corners of the input patch
+        pts2 = pts1
+
+        # Random perspective and affine perturbations
+        if perspective:
+            if not allow_artifacts:
+                perspective_amplitude_x = min(perspective_amplitude_x, margin)
+                perspective_amplitude_y = min(perspective_amplitude_y, margin)
+            perspective_displacement = tf.random.truncated_normal(
+                [1], 0.0, perspective_amplitude_y / 2
             )
-            * np.pi
-            / 180
+            h_displacement_left = tf.random.truncated_normal(
+                [1], 0.0, perspective_amplitude_x / 2
+            )
+            h_displacement_right = tf.random.truncated_normal(
+                [1], 0.0, perspective_amplitude_x / 2
+            )
+            pts2 += tf.stack(
+                [
+                    tf.concat([h_displacement_left, perspective_displacement], 0),
+                    tf.concat([h_displacement_left, -perspective_displacement], 0),
+                    tf.concat([h_displacement_right, perspective_displacement], 0),
+                    tf.concat([h_displacement_right, -perspective_displacement], 0),
+                ]
+            )
+
+        # Random scaling
+        # sample several scales, check collision with borders, randomly pick a valid one
+        if scaling:
+            scales = tf.concat(
+                [[1.0], tf.random.truncated_normal([n_scales], 1, scaling_amplitude / 2)], 0
+            )
+            center = tf.reduce_mean(pts2, axis=0, keepdims=True)
+            scaled = (
+                tf.expand_dims(pts2 - center, axis=0)
+                * tf.expand_dims(tf.expand_dims(scales, 1), 1)
+                + center
+            )
+            if allow_artifacts:
+                valid = tf.range(1, n_scales + 1)  # all scales are valid except scale=1
+            else:
+                valid = tf.where(
+                    tf.reduce_all((scaled >= 0.0) & (scaled <= 1.0), [1, 2])
+                )[:, 0]
+            idx = valid[
+                tf.random.uniform((), maxval=tf.shape(valid)[0], dtype=tf.int32)
+            ]
+            pts2 = scaled[idx]
+
+        # Random translation
+        if translation:
+            t_min, t_max = tf.reduce_min(pts2, axis=0), tf.reduce_min(1 - pts2, axis=0)
+            if allow_artifacts:
+                t_min += translation_overflow
+                t_max += translation_overflow
+            pts2 += tf.expand_dims(
+                tf.stack(
+                    [
+                        tf.random.uniform((), -t_min[0], t_max[0]),
+                        tf.random.uniform((), -t_min[1], t_max[1]),
+                    ]
+                ),
+                axis=0,
+            )
+
+        # Random rotation
+        # sample several rotations, check collision with borders, randomly pick a valid one
+        if rotation:
+            angles = tf.linspace(
+                tf.constant(-max_angle), tf.constant(max_angle), n_angles
+            )
+            angles = tf.concat([[0.0], angles], axis=0)  # in case no rotation is valid
+            center = tf.reduce_mean(pts2, axis=0, keepdims=True)
+            rot_mat = tf.reshape(
+                tf.stack(
+                    [tf.cos(angles), -tf.sin(angles), tf.sin(angles), tf.cos(angles)],
+                    axis=1,
+                ),
+                [-1, 2, 2],
+            )
+            rotated = (
+                tf.matmul(
+                    tf.tile(
+                        tf.expand_dims(pts2 - center, axis=0), [n_angles + 1, 1, 1]
+                    ),
+                    rot_mat,
+                )
+                + center
+            )
+            if allow_artifacts:
+                valid = tf.range(
+                    1, n_angles + 1
+                )  # all angles are valid, except angle=0
+            else:
+                valid = tf.where(
+                    tf.reduce_all((rotated >= 0.0) & (rotated <= 1.0), axis=[1, 2])
+                )[:, 0]
+            idx = valid[
+                tf.random.uniform((), maxval=tf.shape(valid)[0], dtype=tf.int32)
+            ]
+            pts2 = rotated[idx]
+
+        # Rescale to actual size
+        shape = tf.cast(shape[::-1], tf.float32)  # different convention [y, x]
+        pts1 *= tf.expand_dims(shape, axis=0)
+        pts2 *= tf.expand_dims(shape, axis=0)
+
+        def ax(p, q):
+            return [p[0], p[1], 1, 0, 0, 0, -p[0] * q[0], -p[1] * q[0]]
+
+        def ay(p, q):
+            return [0, 0, 0, p[0], p[1], 1, -p[0] * q[1], -p[1] * q[1]]
+
+        a_mat = tf.stack(
+            [f(pts1[i], pts2[i]) for i in range(4) for f in (ax, ay)], axis=0
         )
-        translation_x = np.random.uniform(
-            0, self.backgrounds.shape[1] - self.blob_sheet.shape[0]
+        p_mat = tf.transpose(
+            tf.stack([[pts2[i][j] for i in range(4) for j in range(2)]], axis=0)
         )
-        translation_y = np.random.uniform(
-            0, self.backgrounds.shape[2] - self.blob_sheet.shape[1]
-        )
-        translation = np.array([[translation_x, translation_y]] * 4, np.float32)
-        # First scale, then rotate, then translate
-        unit_points = np.array(
-            [
-                [0, 0],
-                [self.blob_sheet.shape[0], 0],
-                [0, self.blob_sheet.shape[1]],
-                [self.blob_sheet.shape[0], self.blob_sheet.shape[1]],
-            ],
-            np.float32,
-        )
-        transformed_points = unit_points * scale
-        for i in range(transformed_points.shape[0]):
-            transformed_points[i][0] = transformed_points[i][0] * np.cos(
-                rotation
-            ) - transformed_points[i][0] * np.sin(rotation)
-            transformed_points[i][1] = transformed_points[i][0] * np.sin(
-                rotation
-            ) + transformed_points[i][1] * np.cos(rotation)
-        transformed_points += translation
-        # Wiggle points to get perspective transformation
-        transformed_points += np.random.uniform(
-            -self.cfg.BLOBINATOR.MAX_WIGGLE
-            * scale
-            * min(self.blob_sheet.shape[0], self.blob_sheet.shape[1]),
-            self.cfg.BLOBINATOR.MAX_WIGGLE
-            * scale
-            * min(self.blob_sheet.shape[0], self.blob_sheet.shape[1]),
-            (4, 2),
-        )
-        homography = cv.getPerspectiveTransform(unit_points, transformed_points)
+        flat_homography = tf.transpose(tf.linalg.lstsq(a_mat, p_mat, fast=True)).numpy()
+        homography = np.ones(shape=(3, 3))
+        homography[0, :] = flat_homography[0][:3]
+        homography[1, :] = flat_homography[0][3:6]
+        homography[2, :2] = flat_homography[0][6:]
         return homography
 
     def normalize_keypoint(self, keypoint, into):
