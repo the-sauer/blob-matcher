@@ -95,7 +95,6 @@ semver==3.0.4
 setuptools==80.9.0
 six==1.17.0
 stack-data==0.6.3
-superpoint @ git+https://github.com/rpautrat/SuperPoint.git@1411bbd68c50163555d39c1b26e9e046ebd48f27
 sympy==1.14.0
 tensorboard==2.20.0
 tensorboard-data-server==0.7.2

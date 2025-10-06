@@ -2,7 +2,12 @@
 This module provides an extension to learn the features of the Blobinator calibration sheet.
 """
 
+#from BlobBoards import blob_pattern
+
 from abc import ABC
+import json
+import logging
+import os
 from typing import Sequence, TypeAlias
 
 import cv2 as cv
@@ -10,6 +15,7 @@ import numpy as np
 import pdf2image
 import tensorflow as tf
 import torch
+
 
 
 Keypoint: TypeAlias = tuple[np.ndarray, float, float]
@@ -24,44 +30,49 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
-        blobs = np.array(
-            pdf2image.convert_from_path(cfg.BLOBINATOR.BLOB_SHEET, grayscale=True)[0]
-        )
-        self.blob_sheet: np.ndarray = np.zeros(
-            (1, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        )
-        self.blob_sheet_pad_left: int = (cfg.TRAINING.PAD_TO - blobs.shape[0]) // 2
-        self.blob_sheet_pad_up: int = (cfg.TRAINING.PAD_TO - blobs.shape[1]) // 2
-        self.blob_sheet[
-            :,
-            self.blob_sheet_pad_left : self.blob_sheet_pad_left + blobs.shape[0],
-            self.blob_sheet_pad_up : self.blob_sheet_pad_up + blobs.shape[1],
-        ] = blobs
-        self.keypoints: Sequence[Keypoint] = list(
-            map(
-                lambda k: (
-                    np.array(
-                        [
-                            k[0][0] * blobs.shape[0] + self.blob_sheet_pad_left,
-                            k[0][1] * blobs.shape[1] + self.blob_sheet_pad_up,
-                        ]
-                    ),
-                    k[1],
-                    k[2],
-                ),
-                [
-                    ((0.2, 0.2), 100, 0),
-                    ((0.8, 0.2), 100, 0),
-                    ((0.8, 0.8), 100, 0),
-                    ((0.2, 0.8), 100, 0),
-                ],
-            )
-        )
+        # blobs = np.array(
+        #     pdf2image.convert_from_path(cfg.BLOBINATOR.BLOB_SHEET, grayscale=True)[0]
+        # )
+        # self.blob_sheet: np.ndarray = np.zeros(
+        #     (1, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
+        # )
+        # res = blob_pattern(
+        #     cfg.BLOBINATOR.PATTERN_HEIGHT,
+        #     cfg.BLOBINATOR.PATTERN_WIDTH,
+        #     min_scale=3,
+        #     seed=cfg.BLOBINATOR.SEED,
+        #     output_dir=cfg.BLOBINATOR.BOARD_DIR
+        # )
+        # files = res["files_created"]
+        files = ["blob_pattern_1DA.json", "blob_pattern_1DA.png"]
+        blob_metadata = None
+        self.blobs = None
+        for file in files:
+            full_path = os.path.join(cfg.BLOBINATOR.BOARD_DIR, file)
+            if file.endswith(".json"):
+                assert(blob_metadata is None)
+                with open(full_path) as f:
+                    blob_metadata = json.loads(f.read())
+            elif file.endswith(".png"):
+                assert(self.blobs is None)
+                self.blobs = np.zeros(shape=(1, cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
+                self.blobs[0, :, :] = cv.imread(full_path, cv.IMREAD_GRAYSCALE)
+            elif file.endswith(".pdf"):
+                assert(self.blobs is None)
+                self.blobs = np.zeros(shape=(1, cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
+                self.blobs[0, :, :] = np.array(pdf2image.convert_from_path(full_path, grayscale=True)[0])
+            else:
+                logging.warning(f"Unrecognised file '{file}'")
+
+        self.keypoints: Sequence[Keypoint] = list(map(
+            lambda k: (np.array([k["center"][0]["value"], k["center"][1]["value"]]), k["σ"]["value"], 0),
+            blob_metadata["blobs"]
+        ))
         self.backgrounds: np.ndarray = np.zeros(
             shape=(256, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
         )
         self.homographies = [
-            self.sample_homography(shape=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
+            self.sample_homography(shape=(cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
             for _ in range(len(self.backgrounds))
         ]
 
@@ -88,7 +99,7 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
 
         Computes the homography transformation between a random patch in the original image
         and a warped projection with the same image size.
-        As in `tf.contrib.image.transform`, it maps the output point (warped patch) to a
+        As in `tf.contrib.image.transformtransform`, it maps the output point (warped patch) to a
         transformed input point (original patch).
         The original patch, which is initialized with a simple half-size centered crop, is
         iteratively projected, scaled, rotated and translated.
@@ -110,7 +121,7 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
             translation_overflow: Amount of border artifacts caused by translation.
 
         Returns:
-            A `Tensor` of shape `[1, 8]` corresponding to the flattened homography transform.
+            An `array` of shape `(3,3)` corresponding to the homography.
         """
 
         # Corners of the output image
@@ -259,7 +270,7 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
             shape=(1, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
         )
         warped_blobs[0, :, :] = cv.warpPerspective(
-            self.blob_sheet[0, :, :],
+            self.blobs[0, :, :],
             homography,
             (self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO),
         )
@@ -269,7 +280,7 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         """
         Maps the list of keypoints according to the homography.
         """
-
+        # TODO: Map ellipse instead of point
         def map_keypoint(k: Keypoint) -> Keypoint:
             location, scale, rotation = k
             x = location[0]
@@ -308,9 +319,10 @@ class BlobinatorTrainDataset(BlobinatorDataset):
         )
         return (
             {
-                "img": self.blob_sheet,
-                "padLeft": self.blob_sheet_pad_left,
-                "padUp": self.blob_sheet_pad_up,
+                "img": self.blobs,
+                # TODO: Return meaningful values here
+                "padLeft": 0,
+                "padUp": 0,
             },
             {"img": mapped_image, "padLeft": 0, "padUp": 0},
             normalized_k,
@@ -348,7 +360,7 @@ class BlobinatorTestDataset(BlobinatorDataset):
         )
         return (
             {
-                "img": self.blob_sheet,
+                "img": self.blobs,
                 "padLeft": self.blob_sheet_pad_left,
                 "padUp": self.blob_sheet_pad_up,
             },
