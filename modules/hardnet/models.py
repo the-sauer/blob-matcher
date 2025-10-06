@@ -67,26 +67,29 @@ class HardNet(nn.Module):
 
         # model processing patches of size [32 x 32] and giving description vectors of length 2**7
         self.features = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(1, 32, kernel_size=3, padding=1, bias=False),             # 32x32
             nn.BatchNorm2d(32, affine=False),
             nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),            # 32x32
             nn.BatchNorm2d(32, affine=False),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),  # 16x16
             nn.BatchNorm2d(64, affine=False),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1, bias=False),            # 16x16
             nn.BatchNorm2d(64, affine=False),
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False), # 8x8
             nn.BatchNorm2d(128, affine=False),
             nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),          # 8x8
             nn.BatchNorm2d(128, affine=False),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Conv2d(128, 128, kernel_size=8, bias=False),
+            # Maybe put Maxpooling here like:
+            # nn.MaxPool2d(kernel_size=(8,1)),
+            nn.Conv2d(128, 128, kernel_size=8, bias=False),                     # 1x1
+            # nn.Conv2d(128, 128, kernel_size=(1,8), bias=False),
             nn.BatchNorm2d(128, affine=False),
         )
 
