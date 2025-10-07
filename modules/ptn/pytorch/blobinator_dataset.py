@@ -60,10 +60,9 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
                 logging.warning(f"Unrecognised file '{file}'")
 
         self.keypoints: Sequence[Keypoint] = list(map(
-            lambda k: (np.array([k["center"][0]["value"], k["center"][1]["value"]]), k["σ"]["value"], 0),
+            lambda k: (np.array([k["center"][0]["value"] - 1, k["center"][1]["value"] - 1]), k["σ"]["value"], 0),
             blob_metadata["blobs"]
         ))
-        
         self.backgrounds: np.ndarray = np.zeros(
             shape=(len(os.listdir((cfg.BLOBINATOR.BACKGROUND_DIR))), self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
         )
@@ -294,6 +293,38 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         )
         warped_blobs.reshape(background.shape)
         return warped_blobs
+    
+    def keypoint_to_mapped_conic(self, homography: np.ndarray, k: Keypoint) -> np.ndarray:
+        location, scale, rotation = k
+        x = location[0]
+        y = location[1]
+        conic = np.array(
+            [[1, 0, -x],
+            [0, 1, -y],
+            [-x, -y, x**2 + y**2 - scale**2]],
+            dtype=float
+        )
+        mapped_conic = np.linalg.inv(homography).transpose() @ conic @ np.linalg.inv(homography)
+        mapped_conic = (mapped_conic + mapped_conic.transpose()) / 2
+        return mapped_conic
+    
+    def conic_to_ellipse(self, conic: np.ndarray) -> tuple[np.ndarray, tuple[float, float], float]:
+        location = -np.linalg.inv(conic[:2,:2] * 2) @ (conic[:2,2] * 2)
+        Fc = conic[0,0] * location[0] ** 2 \
+            + 2 * conic[0,1] * location[0] * location[0] \
+            + conic[1,1] * location[1] ** 2 \
+            + 2 * conic[0,2] * location[0] \
+            + 2 * conic[1,2] * location[1] \
+            + conic[2,2]
+        eigenvalues, eigenvectors = np.linalg.eigh(conic[:2,:2])
+        a = np.sqrt(-Fc / eigenvalues[1])
+        b = np.sqrt(-Fc / eigenvalues[0])
+        angle = np.arccos(
+            np.dot(eigenvectors[1], np.array([1, 0]))
+            / np.linalg.norm(eigenvectors[1])
+        )
+       
+        return location, (a,b), angle
 
     def map_keypoints(self, homography: np.ndarray) -> Sequence[Keypoint]:
         """
@@ -336,6 +367,7 @@ class BlobinatorTrainDataset(BlobinatorDataset):
         normalized_k_mapped = self.normalize_keypoint(
             k_mapped, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
         )
+        ellipse = self.conic_to_ellipse(self.keypoint_to_mapped_conic(transform, k))
         return (
             {
                 "img": self.blobs,
@@ -344,12 +376,13 @@ class BlobinatorTrainDataset(BlobinatorDataset):
                 "padUp": 0,
             },
             {"img": mapped_image, "padLeft": 0, "padUp": 0},
-            normalized_k,
-            normalized_k_mapped,
+            k,
+            k_mapped,
             "img0000",
             f"img{(index % 4) + 1:04}",
             1.0,
             0.0,
+            ellipse
         )
 
     def __len__(self):

@@ -8,16 +8,21 @@ import numpy as np
 from configs.defaults import _C as cfg
 from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset
 
+def repeat(s):
+    while True:
+        for e in s:
+            yield e
+
 dataset = BlobinatorTrainDataset(cfg)
 dataset.__getitem__(0)
 img = None
-for _, data, color in zip(range(4), dataset, matplotlib.colors.BASE_COLORS.values()):
+for _, data, color in zip(range(238), dataset, repeat(matplotlib.colors.BASE_COLORS.values())):
     _, mapped_image, _, mapped_keypoint, *_ = data
     if img is None:
         img = np.stack((mapped_image["img"].reshape((1500, 1500)),) * 3, axis=-1).astype(np.uint8) # Convert to RGB
     loc, scale, rotation = mapped_keypoint
-    x = (loc[0] + 1) * 750
-    y = (loc[1] + 1) * 750
+    x = loc[0]
+    y = loc[1]
     x2 = x - np.sin(rotation) * scale
     y2 = y + np.cos(rotation) * scale
     color = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
