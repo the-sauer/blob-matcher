@@ -64,9 +64,13 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
             blob_metadata["blobs"]
         ))
         self.backgrounds: np.ndarray = np.zeros(
-            shape=(len(os.listdir((cfg.BLOBINATOR.BACKGROUND_DIR))), self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
+            shape=(
+                len(list(filter(lambda x: x.endswith(".jpg"), os.listdir((cfg.BLOBINATOR.BACKGROUND_DIR))))),
+                self.cfg.TRAINING.PAD_TO,
+                self.cfg.TRAINING.PAD_TO
+            )
         )
-        for i, img_path in enumerate(os.listdir(cfg.BLOBINATOR.BACKGROUND_DIR)):
+        for i, img_path in enumerate(filter(lambda x: x.endswith(".jpg"), os.listdir(cfg.BLOBINATOR.BACKGROUND_DIR))):
             img = cv.imread(os.path.join(cfg.BLOBINATOR.BACKGROUND_DIR, img_path), cv.IMREAD_GRAYSCALE)
             if img.shape[0] > img.shape[1]:
                 crop1 = (img.shape[0] - img.shape[1]) // 2
@@ -310,21 +314,28 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
     
     def conic_to_ellipse(self, conic: np.ndarray) -> tuple[np.ndarray, tuple[float, float], float]:
         location = -np.linalg.inv(conic[:2,:2] * 2) @ (conic[:2,2] * 2)
-        Fc = conic[0,0] * location[0] ** 2 \
-            + 2 * conic[0,1] * location[0] * location[0] \
-            + conic[1,1] * location[1] ** 2 \
-            + 2 * conic[0,2] * location[0] \
-            + 2 * conic[1,2] * location[1] \
-            + conic[2,2]
-        eigenvalues, eigenvectors = np.linalg.eigh(conic[:2,:2])
-        a = np.sqrt(-Fc / eigenvalues[1])
-        b = np.sqrt(-Fc / eigenvalues[0])
-        angle = np.arccos(
-            np.dot(eigenvectors[1], np.array([1, 0]))
-            / np.linalg.norm(eigenvectors[1])
-        )
-       
-        return location, (a,b), angle
+        A = conic[0,0]
+        B = conic[0,1] * 2
+        C = conic[1,1]
+        D = conic[0,2] * 2
+        E = conic[1,2] * 2
+        F = conic[2,2]
+        x_0 = location[0]
+        y_0 = location[1]
+
+        F_c = A * x_0 * x_0 + B * x_0 * y_0 + C * y_0 * y_0 + D * x_0 + E * y_0 + F
+        assert F_c < 0
+
+        #eigenvalues, eigenvectors = np.linalg.eig(conic[:2,:2])
+        semi_axis_factor1 = 2 * (A * E ** 2 + C * D ** 2 - B * D * E + (B ** 2 - 4 * A * C) * F)
+        semi_minor_axis_factor2 = (A + C) - np.sqrt((A - C) ** 2 + B ** 2)
+        semi_major_axis_factor2 = (A + C) + np.sqrt((A - C) ** 2 + B ** 2)
+        semi_axis_quotient = B ** 2 - 4 * A * C
+        semi_minor_axis = -np.sqrt(semi_axis_factor1 * semi_minor_axis_factor2) / semi_axis_quotient
+        semi_major_axis = -np.sqrt(semi_axis_factor1 * semi_major_axis_factor2) / semi_axis_quotient
+        angle = np.atan2(-B, C - A) / 2
+
+        return location, (semi_major_axis, semi_minor_axis), angle
 
     def map_keypoints(self, homography: np.ndarray) -> Sequence[Keypoint]:
         """

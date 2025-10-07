@@ -17,14 +17,12 @@ dataset = BlobinatorTrainDataset(cfg)
 dataset.__getitem__(0)
 img = None
 for _, data, color in zip(range(238), dataset, repeat(matplotlib.colors.BASE_COLORS.values())):
-    _, mapped_image, _, mapped_keypoint, *_ = data
+    _, mapped_image, _, mapped_keypoint, *_ , ellipse = data
     if img is None:
         img = np.stack((mapped_image["img"].reshape((1500, 1500)),) * 3, axis=-1).astype(np.uint8) # Convert to RGB
-    loc, scale, rotation = mapped_keypoint
-    x = loc[0]
-    y = loc[1]
-    x2 = x - np.sin(rotation) * scale
-    y2 = y + np.cos(rotation) * scale
+    location, (semi_major_axis, semi_minor_axis), rotation = ellipse
+    x = location[0]
+    y = location[1]
     color = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
-    cv.line(img, (int(x), int(y)), (int(x2), int(y2)), color, 5)
+    cv.ellipse(img, (int(x), int(y)), (int(semi_major_axis), int(semi_minor_axis)), rotation / np.pi * 180, 0, 360, color)
 cv.imwrite("transformed.png", img)
