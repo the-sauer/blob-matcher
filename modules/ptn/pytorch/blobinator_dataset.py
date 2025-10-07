@@ -30,12 +30,7 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
-        # blobs = np.array(
-        #     pdf2image.convert_from_path(cfg.BLOBINATOR.BLOB_SHEET, grayscale=True)[0]
-        # )
-        # self.blob_sheet: np.ndarray = np.zeros(
-        #     (1, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        # )
+        
         # res = blob_pattern(
         #     cfg.BLOBINATOR.PATTERN_HEIGHT,
         #     cfg.BLOBINATOR.PATTERN_WIDTH,
@@ -68,17 +63,37 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
             lambda k: (np.array([k["center"][0]["value"], k["center"][1]["value"]]), k["σ"]["value"], 0),
             blob_metadata["blobs"]
         ))
+        
         self.backgrounds: np.ndarray = np.zeros(
-            shape=(256, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
+            shape=(len(os.listdir((cfg.BLOBINATOR.BACKGROUND_DIR))), self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
         )
+        for i, img_path in enumerate(os.listdir(cfg.BLOBINATOR.BACKGROUND_DIR)):
+            img = cv.imread(os.path.join(cfg.BLOBINATOR.BACKGROUND_DIR, img_path), cv.IMREAD_GRAYSCALE)
+            if img.shape[0] > img.shape[1]:
+                crop1 = (img.shape[0] - img.shape[1]) // 2
+                crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[0] else crop1 + 1
+                img = img[crop1:-crop2, :]
+            elif img.shape[1] > img.shape[0]:
+                crop1 = (img.shape[1] - img.shape[0]) // 2
+                crop2 = crop1 if 2 * crop1 + img.shape[0] == img.shape[1] else crop1 + 1
+                img = img[:, crop1:-crop2]
+            try:
+                self.backgrounds[i, :, :] = cv.resize(img, dsize=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
+            except:
+                logging.error(f"Failed to resize image {img_path}")
+
         self.homographies = [
-            self.sample_homography(shape=(cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
+            self.sample_homography(
+                original_shape=(cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT),
+                patch_shape=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)
+            )
             for _ in range(len(self.backgrounds))
         ]
 
     def sample_homography(
         self,
-        shape,
+        original_shape,
+        patch_shape,
         perspective=True,
         scaling=True,
         rotation=True,
@@ -105,7 +120,8 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         iteratively projected, scaled, rotated and translated.
 
         Arguments:
-            shape: A rank-2 `Tensor` specifying the height and width of the original image.
+            original_shape: A rank-2 `Tensor` specifying the height and width of the original image.
+            patch_shape: A rank-2 `Tensor` specifying the height and width of the patch image.
             perspective: A boolean that enables the perspective and affine transformations.
             scaling: A boolean that enables the random scaling of the patch.
             rotation: A boolean that enables the random rotation of the patch.
@@ -233,9 +249,9 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
             pts2 = rotated[idx]
 
         # Rescale to actual size
-        shape = tf.cast(shape[::-1], tf.float32)  # different convention [y, x]
-        pts1 *= tf.expand_dims(shape, axis=0)
-        pts2 *= tf.expand_dims(shape, axis=0)
+        original_shape = tf.cast(original_shape[::-1], tf.float32)  # different convention [y, x]
+        pts1 *= tf.expand_dims(original_shape, axis=0)
+        pts2 *= tf.expand_dims(original_shape, axis=0)
 
         def ax(p, q):
             return [p[0], p[1], 1, 0, 0, 0, -p[0] * q[0], -p[1] * q[0]]
@@ -254,7 +270,10 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         homography[0, :] = flat_homography[0][:3]
         homography[1, :] = flat_homography[0][3:6]
         homography[2, :2] = flat_homography[0][6:]
-        return homography
+        correct_translation = np.identity(3)
+        correct_translation[0,2] = (patch_shape[0] - original_shape[0]) // 2
+        correct_translation[1,2] = (patch_shape[1] - original_shape[1]) // 2
+        return correct_translation @ homography
 
     def normalize_keypoint(self, keypoint, into):
         loc, scale, rotation = keypoint
@@ -266,14 +285,14 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         """
         Warps the blobsheet into the background according to a homography.
         """
-        warped_blobs = np.zeros(
-            shape=(1, self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        )
-        warped_blobs[0, :, :] = cv.warpPerspective(
+        warped_blobs = cv.warpPerspective(
             self.blobs[0, :, :],
             homography,
             (self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO),
+            background,
+            borderMode=cv.BORDER_TRANSPARENT
         )
+        warped_blobs.reshape(background.shape)
         return warped_blobs
 
     def map_keypoints(self, homography: np.ndarray) -> Sequence[Keypoint]:

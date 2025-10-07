@@ -10,4 +10,5 @@ TEST:
   TEST_BATCH_SIZE: 10
   TRANSFORMER: "PTN"
 BLOBINATOR:
-  BLOB_SEED: 0x1234
+  SEED: 0x1234
+  BACKGROUND_DIR: "./data/backgrounds/NotreDame/images"
