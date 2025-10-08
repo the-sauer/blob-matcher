@@ -17,7 +17,7 @@ import tensorflow as tf
 import torch
 
 
-
+Ellipse: TypeAlias = tuple[np.ndarray, tuple[float, float], float]
 Keypoint: TypeAlias = tuple[np.ndarray, float, float]
 
 
@@ -326,7 +326,6 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         F_c = A * x_0 * x_0 + B * x_0 * y_0 + C * y_0 * y_0 + D * x_0 + E * y_0 + F
         assert F_c < 0
 
-        #eigenvalues, eigenvectors = np.linalg.eig(conic[:2,:2])
         semi_axis_factor1 = 2 * (A * E ** 2 + C * D ** 2 - B * D * E + (B ** 2 - 4 * A * C) * F)
         semi_minor_axis_factor2 = (A + C) - np.sqrt((A - C) ** 2 + B ** 2)
         semi_major_axis_factor2 = (A + C) + np.sqrt((A - C) ** 2 + B ** 2)
@@ -362,6 +361,19 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
             return mapped_location, new_scale, new_rotation.item()
 
         return list(map(map_keypoint, self.keypoints))
+
+    def ellipse_to_affine(self, ellipse: Ellipse) -> np.ndarray:
+        location, (semi_major_axis, semi_minor_axis), angle = ellipse
+        scale = np.diag([
+            semi_major_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            semi_minor_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            1
+        ])
+        rotation = np.identity(3)
+        rotation[:2,:] = cv.getRotationMatrix2D((0,0), -angle * 180 / np.pi, 1)
+        translation = np.identity(3)
+        translation[:2,2] = location# - np.array([scale[0,0], scale[1,1]]) / 2
+        return translation @ rotation @ scale
 
 
 class BlobinatorTrainDataset(BlobinatorDataset):
