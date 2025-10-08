@@ -31,6 +31,12 @@ for i, data, color in zip(range(238), dataset, repeat(matplotlib.colors.BASE_COL
             [np.array([-0.5,-0.5,1]), np.array([-0.5,0.5,1]), np.array([0.5,0.5,1]), np.array([0.5,-0.5,1])],
             [np.array([-0.5,0.5,1]), np.array([0.5,0.5,1]), np.array([0.5,-0.5,1]), np.array([-0.5,-0.5,1])]
         ):
+            A_inv = np.identity(3)
+            A_inv[:2,:] = cv.invertAffineTransform(A[:2,:])
+            patch_size = 32
+            patch_transform = np.diag([patch_size, patch_size, 1]) @ np.array([[1,0,0.5], [0,1,0.5], [0,0,1]]) @ A_inv
+            patch = cv.warpAffine(img, patch_transform[:2,:], (patch_size, patch_size))
+            cv.imwrite(f"patch_{i}.png", patch)
             p1 = A @ p1
             p2 = A @ p2
             print(p1)
