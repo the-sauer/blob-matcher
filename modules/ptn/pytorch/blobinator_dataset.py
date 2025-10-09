@@ -5,10 +5,11 @@ This module provides an extension to learn the features of the Blobinator calibr
 #from BlobBoards import blob_pattern
 
 from abc import ABC
+from itertools import chain, repeat
 import json
 import logging
 import os
-from typing import Sequence, TypeAlias
+from typing import Any, Generator, NotRequired, Sequence, TypeAlias, TypedDict
 
 import cv2 as cv
 import numpy as np
@@ -19,13 +20,22 @@ import torch
 
 Ellipse: TypeAlias = tuple[np.ndarray, tuple[float, float], float]
 Keypoint: TypeAlias = tuple[np.ndarray, float, float]
+class BlobParam(TypedDict):
+    value: float
+    unit: str
+class IsoBlob(TypedDict):
+    center: list[BlobParam]
+    σ: BlobParam
+class BoardBundle(TypedDict):
+    preamble: NotRequired[Any]
+    blobs: list[IsoBlob]
 
 
-class BlobinatorDataset(torch.utils.data.Dataset, ABC):
+class BlobinatorDataset(ABC):
     """
-    This is the Blobinator dataset.
+    This is an abstract base class for Blobinator datasets.
 
-    It warps the Blobinator sheet into a number of background images via randomly generated homographies.
+    It warps the Blobinator sheet and its keypoints into a number of background images via randomly generated homographies.
     """
 
     def __init__(self, cfg) -> None:
@@ -40,21 +50,16 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         # )
         # files = res["files_created"]
         files = ["blob_pattern_1DA.json", "blob_pattern_1DA.png"]
-        blob_metadata = None
-        self.blobs = None
+        blob_metadata: BoardBundle = { "blobs": [] }
+        self.blobs = np.zeros(shape=(1, cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
         for file in files:
             full_path = os.path.join(cfg.BLOBINATOR.BOARD_DIR, file)
             if file.endswith(".json"):
-                assert(blob_metadata is None)
                 with open(full_path) as f:
                     blob_metadata = json.loads(f.read())
             elif file.endswith(".png"):
-                assert(self.blobs is None)
-                self.blobs = np.zeros(shape=(1, cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
                 self.blobs[0, :, :] = cv.imread(full_path, cv.IMREAD_GRAYSCALE)
             elif file.endswith(".pdf"):
-                assert(self.blobs is None)
-                self.blobs = np.zeros(shape=(1, cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
                 self.blobs[0, :, :] = np.array(pdf2image.convert_from_path(full_path, grayscale=True)[0])
             else:
                 logging.warning(f"Unrecognised file '{file}'")
@@ -72,6 +77,9 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         )
         for i, img_path in enumerate(filter(lambda x: x.endswith(".jpg"), os.listdir(cfg.BLOBINATOR.BACKGROUND_DIR))):
             img = cv.imread(os.path.join(cfg.BLOBINATOR.BACKGROUND_DIR, img_path), cv.IMREAD_GRAYSCALE)
+            if img is None:
+                logging.error(f"Failed to load image '{img_path}'")
+                continue
             if img.shape[0] > img.shape[1]:
                 crop1 = (img.shape[0] - img.shape[1]) // 2
                 crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[0] else crop1 + 1
@@ -80,14 +88,11 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
                 crop1 = (img.shape[1] - img.shape[0]) // 2
                 crop2 = crop1 if 2 * crop1 + img.shape[0] == img.shape[1] else crop1 + 1
                 img = img[:, crop1:-crop2]
-            try:
-                self.backgrounds[i, :, :] = cv.resize(img, dsize=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
-            except:
-                logging.error(f"Failed to resize image {img_path}")
+            self.backgrounds[i, :, :] = cv.resize(img, dsize=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))                
 
         self.homographies = [
             self.sample_homography(
-                original_shape=(cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT),
+                original_shape=self.blobs[0].shape,
                 patch_shape=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)
             )
             for _ in range(len(self.backgrounds))
@@ -278,15 +283,21 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         correct_translation[1,2] = (patch_shape[1] - original_shape[1]) // 2
         return correct_translation @ homography
 
-    def normalize_keypoint(self, keypoint, into):
-        loc, scale, rotation = keypoint
-        normalized_x = 2 * loc[0] / into[0] - 1
-        normalized_y = 2 * loc[1] / into[1] - 1
-        return np.array([normalized_x, normalized_y]), scale, rotation
-
-    def map_blobs(self, background, homography):
+    def map_blobs(self, background: np.ndarray, homography: np.ndarray) -> np.ndarray:
         """
         Warps the blobsheet into the background according to a homography.
+
+        The blobboard is taken from `self`.
+
+        Parameters
+        ----------
+        background : A 2-D array containing the image data for the background.
+        homography : A valid homography with shape (3,3) that describes the transformation from the blobboard into
+                the image.
+
+        Returns
+        -------
+            An image with the blobsheet mapped in front of a background.
         """
         warped_blobs = cv.warpPerspective(
             self.blobs[0, :, :],
@@ -299,7 +310,23 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         return warped_blobs
     
     def keypoint_to_mapped_conic(self, homography: np.ndarray, k: Keypoint) -> np.ndarray:
-        location, scale, rotation = k
+        """
+        Transforms a keypoint into a conic section and warps it via a homography.
+
+        When ignoring orientation a keypoint can be repersented by a circle. If the circle is represented as a conic
+        section, it can be transformed with a homography. We expect to obtain an elliptical conic section as a result,
+        since the perspective change of the used homographies are not that large.
+
+        Parameters
+        ----------
+        homography : The homography with which the keypoint will be mapped.
+        k : The keypoint.
+
+        Returns
+        -------
+            An array of shape (3,3) representing the conic section of the mapped keypoint.
+        """
+        location, scale, _ = k
         x = location[0]
         y = location[1]
         conic = np.array(
@@ -313,6 +340,25 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         return mapped_conic
     
     def conic_to_ellipse(self, conic: np.ndarray) -> tuple[np.ndarray, tuple[float, float], float]:
+        """
+        Extracts ellipse parameters from a conic section.
+
+        Parameters
+        ----------
+        conic : A (3,3) array with the conic section.
+
+        Returns
+        -------
+            A tuple consisting of
+                - a 2 entry array with the location,
+                - a tuple containing the semi-major axis and the semi-minor axis, and
+                - the angle of the semi-major axis in radians.
+
+        Raises
+        ------
+        AssertionError
+            When the conic does not represent a valid ellipse.
+        """
         location = -np.linalg.inv(conic[:2,:2] * 2) @ (conic[:2,2] * 2)
         A = conic[0,0]
         B = conic[0,1] * 2
@@ -336,33 +382,18 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
 
         return location, (semi_major_axis, semi_minor_axis), angle
 
-    def map_keypoints(self, homography: np.ndarray) -> Sequence[Keypoint]:
-        """
-        Maps the list of keypoints according to the homography.
-        """
-        # TODO: Map ellipse instead of point
-        def map_keypoint(k: Keypoint) -> Keypoint:
-            location, scale, rotation = k
-            x = location[0]
-            y = location[1]
-            mapped_location = homography @ np.array([x, y, 1])
-            mapped_location = mapped_location[:2] / mapped_location[2]
-            second_location = homography @ np.array(
-                [x - np.sin(rotation) * scale, y + np.cos(rotation) * scale, 1]
-            )
-            second_location = second_location[:2] / second_location[2]
-            new_rotation = np.arccos(
-                np.dot(second_location - mapped_location, np.array([0, 1]))
-                / np.linalg.norm(second_location - mapped_location)
-            )
-            if second_location[0] > mapped_location[0]:
-                new_rotation = (2 * np.pi - new_rotation) % (2 * np.pi)
-            new_scale = float(np.linalg.norm(second_location - mapped_location))
-            return mapped_location, new_scale, new_rotation.item()
-
-        return list(map(map_keypoint, self.keypoints))
-
     def ellipse_to_affine(self, ellipse: Ellipse) -> np.ndarray:
+        """
+        Finds an affine transformation that transforms the unit circle into the ellipse.
+
+        Parameters
+        ----------
+            ellipse: The ellipse in which the unit circle should be transformed.
+
+        Returns
+        -------
+            An (3,3) array representing the affine transformation.
+        """
         location, (semi_major_axis, semi_minor_axis), angle = ellipse
         scale = np.diag([
             semi_major_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
@@ -372,7 +403,7 @@ class BlobinatorDataset(torch.utils.data.Dataset, ABC):
         rotation = np.identity(3)
         rotation[:2,:] = cv.getRotationMatrix2D((0,0), -angle * 180 / np.pi, 1)
         translation = np.identity(3)
-        translation[:2,2] = location# - np.array([scale[0,0], scale[1,1]]) / 2
+        translation[:2,2] = location
         return translation @ rotation @ scale
 
 
@@ -381,15 +412,15 @@ class BlobinatorTrainDataset(BlobinatorDataset):
         background = self.backgrounds[index // len(self.keypoints)]
         transform = self.homographies[index // len(self.keypoints)]
         mapped_image = self.map_blobs(background, transform)
-        mapped_keypoints = self.map_keypoints(transform)
+        #mapped_keypoints = self.map_keypoints(transform)
         k = self.keypoints[index % len(self.keypoints)]
-        k_mapped = mapped_keypoints[index % len(self.keypoints)]
-        normalized_k = self.normalize_keypoint(
-            k, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        )
-        normalized_k_mapped = self.normalize_keypoint(
-            k_mapped, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        )
+        # k_mapped = mapped_keypoints[index % len(self.keypoints)]
+        # normalized_k = self.normalize_keypoint(
+        #     k, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
+        # )
+        # normalized_k_mapped = self.normalize_keypoint(
+        #     k_mapped, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
+        # )
         ellipse = self.conic_to_ellipse(self.keypoint_to_mapped_conic(transform, k))
         return (
             {
@@ -399,8 +430,8 @@ class BlobinatorTrainDataset(BlobinatorDataset):
                 "padUp": 0,
             },
             {"img": mapped_image, "padLeft": 0, "padUp": 0},
-            k,
-            k_mapped,
+            None,
+            None,
             "img0000",
             f"img{(index % 4) + 1:04}",
             1.0,
