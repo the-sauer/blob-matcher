@@ -501,3 +501,20 @@ class BlobinatorTestDataset(torch.utils.data.Dataset, BlobinatorDataset):
     
     def __len__(self):
         return 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, os.getcwd())
+    from configs.defaults import _C as cfg
+
+    dir = "./data/patches"
+
+    dataset = BlobinatorTrainDataset(cfg)
+
+    for i, (anchor_patch, positive_patch, garbage_patch, garbage_available) in zip(range(3), dataset):
+        os.makedirs(os.path.join(dir, f"{i:02}"), exist_ok=True)
+        cv.imwrite(os.path.join(dir, f"{i:02}", "anchor.png"), (anchor_patch[0] * 255).astype(np.uint8))
+        cv.imwrite(os.path.join(dir, f"{i:02}", "positive.png"), (positive_patch[0] * 255).astype(int))
+        if garbage_available:
+            cv.imwrite(os.path.join(dir, f"{i:02}", "garbage.png"), garbage_patch[0])
