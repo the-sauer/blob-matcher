@@ -446,12 +446,16 @@ class BlobinatorDataset(ABC):
 
 
 class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
-    def __iter__(self) -> Generator[tuple[
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        bool
-    ]]:
+    def __iter__(self) -> Generator[
+        tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            bool
+        ],
+        None,
+        None
+    ]:
         """
         Yields
         ------
@@ -479,9 +483,9 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                     garbage_available = True
                 
                 yield (
-                    anchor_patch,
-                    positive_patch,
-                    garbage_patch,
+                    anchor_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE).astype(np.float32) / 255,
+                    positive_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE).astype(np.float32) / 255,
+                    garbage_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE).astype(np.float32) / 255,
                     garbage_available
                 )
 

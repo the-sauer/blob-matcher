@@ -128,6 +128,7 @@ def train(cfg,
           augm,
           optimizer,
           epoch,
+          device,
           logger,
           best_fpr_val=100):
     # switch to train mode
@@ -139,43 +140,26 @@ def train(cfg,
             train_loader):  # iterate over batches of train_loader
         # print(batch_idx)
 
-        imgIDs_a = None if len(data) < 5 else data[4]
-        # create dictionary of images
-        img_a = dict(zip(imgIDs_a, data[0]["img"]))
-        theta_a = [theta.float().to(device) for theta in data[2]]
+        img_a, img_p, img_g, garbage_available = data
+        img_a = img_a.to(device)
+        img_p = img_p.to(device)
+        img_g = img_g.to(device)
 
-        imgIDs_p = None if len(data) < 6 else data[5]
-        # create dictionary of images
-        img_p = dict(zip(imgIDs_p, data[1]["img"]))
-        theta_p = [theta.float().to(device) for theta in data[3]]
-
-        # get scale correction factor and orientation correction constant,
-        # for the training data two paired keypoints always fall on two
-        # different images
-        scaleCorrect = None if len(data) < 7 else data[6].float().to(device)
-        orientCorrect = None if len(data) < 8 else data[7].float().to(device)
-
-        if cfg.TRAINING.SOFT_AUG:
-            # augment locations of anchor keypoints at train time
-            #theta_a[0] = augm.augmentLoc(theta_a[0])
-            # augment orientations of anchor keypoints at train time and apply
-            # correction term
-            theta_a[2] = (augm.augmentRot(theta_a[2]) +
-                          orientCorrect) % (2 * np.pi)
-            # augment scales ratios by adjusting either of the keypoints,
-            #theta_a[1], theta_p[1] = augm.augmentScale(theta_a[1], theta_p[1])
+        # TODO: Filter garbage
 
         # forward-propagate input through network and get [batchSize x 1 x
         # resolution x resolution] output array
-        out_a, p_a = model(img_a, theta_a, imgIDs_a)
+        out_a, p_a = model(img_a)
 
         # forward-propagate input through network and get [batchSize x 1 x
         # resolution x resolution] output array
-        out_p, p_p = model(img_p, theta_p, imgIDs_p)
+        out_p, p_p = model(img_p)
+
+        out_g, _ = model(img_g)
 
         loss, min_neg_idx = loss_HardNet_weighted(
             out_a,
-            out_p,
+            torch.cat((out_p, out_g), dim=0),
             anchor_swap=cfg.TRAINING.ANCHOR_SWAP,
             margin=cfg.TRAINING.MARGIN,
             batch_reduce=cfg.TRAINING.BATCH_REDUCE,
@@ -436,7 +420,7 @@ def create_optimizer(cfg, model):
     return optimizer
 
 
-def main(cfg, model, logger, file_logger):
+def main(cfg, model, device, logger, file_logger):
     # print the experiment configuration
     print('\nparsed options:\n{}\n'.format(cfg))
 
@@ -487,7 +471,7 @@ def main(cfg, model, logger, file_logger):
         torch.cuda.empty_cache()
         # train the network on the current epoch's data
         best_fpr_val = train(cfg, train_loader, val_loaders, test_loaders,
-                             model, augm, optimizer1, epoch, logger,
+                             model, augm, optimizer1, epoch, device, logger,
                              best_fpr_val)
         torch.cuda.empty_cache()
 
@@ -566,4 +550,4 @@ if __name__ == '__main__':
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.TRAINING.GPU_ID)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    main(cfg, model, logger, file_logger)
+    main(cfg, model, device, logger, file_logger)
