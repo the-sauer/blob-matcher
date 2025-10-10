@@ -15,6 +15,7 @@ import cv2 as cv
 from matplotlib import pyplot as plt
 import numpy as np
 import pdf2image
+import skimage
 import tensorflow as tf
 import torch
 
@@ -400,8 +401,8 @@ class BlobinatorDataset(ABC):
         """
         location, (semi_major_axis, semi_minor_axis), angle = ellipse
         scale = np.diag([
-            semi_major_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
-            semi_minor_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            semi_major_axis,# * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            semi_minor_axis,# * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
             1
         ])
         rotation = np.identity(3)
@@ -424,8 +425,8 @@ class BlobinatorDataset(ABC):
         """
         location, (semi_major_axis, semi_minor_axis), angle = ellipse
         scale = np.diag([
-            semi_major_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
-            semi_minor_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            semi_major_axis,# * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            semi_minor_axis,# * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
             1
         ])
         rotation = np.identity(3)
@@ -436,13 +437,22 @@ class BlobinatorDataset(ABC):
         affine[:2,:] = cv.invertAffineTransform(affine[:2,:])
         return affine
     
-    def get_patch(self, img, A, pad_with=255): 
-        A_inv = np.identity(3)
-        A_inv[:2,:] = cv.invertAffineTransform(A[:2,:])
-        patch_size = 32
-        patch_transform = np.diag([patch_size, patch_size, 1]) @ np.array([[1,0,0.5], [0,1,0.5], [0,0,1]]) @ A_inv
-        patch = cv.warpAffine(img, patch_transform[:2,:], (patch_size, patch_size), borderMode=cv.BORDER_CONSTANT, borderValue=pad_with)
-        return patch
+    def get_patch(self, img, A, pad_with=255):
+        def backwards_map(cr):
+            coords = np.empty_like(cr)
+            for i in range(cr.shape[0]):
+                theta = cr[i,0] * 2 * np.pi / self.cfg.INPUT.IMAGE_SIZE
+                rho = cr[i,1] * np.log(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR) / self.cfg.INPUT.IMAGE_SIZE
+                r = np.exp(rho)
+                coords[i] = (A @ np.array([r * np.cos(theta), r * np.sin(theta), 1]))[:2]
+            return coords
+        return skimage.transform.warp(
+            img,
+            backwards_map,
+            output_shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
+            mode="constant",
+            cval=pad_with
+        )
 
 
 class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
@@ -470,8 +480,11 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
             garbage_keypoints: Sequence[Keypoint] = []  # TODO: Find garbage keypoints
             for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
                 # TODO: Log-polar transform
+                # TODO: Augmentation
                 anchor_patch_transform = self.ellipse_to_affine((keypoint[0], (keypoint[1], keypoint[1]), 0))
+                
                 anchor_patch = self.get_patch(self.blobs, anchor_patch_transform)
+                # TODO: Augmentation
                 positive_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(homography, keypoint)))
                 positive_patch = self.get_patch(warped_image, positive_patch_transform)
 
@@ -515,6 +528,6 @@ if __name__ == "__main__":
     for i, (anchor_patch, positive_patch, garbage_patch, garbage_available) in zip(range(3), dataset):
         os.makedirs(os.path.join(dir, f"{i:02}"), exist_ok=True)
         cv.imwrite(os.path.join(dir, f"{i:02}", "anchor.png"), (anchor_patch[0] * 255).astype(np.uint8))
-        cv.imwrite(os.path.join(dir, f"{i:02}", "positive.png"), (positive_patch[0] * 255).astype(int))
+        cv.imwrite(os.path.join(dir, f"{i:02}", "positive.png"), (positive_patch[0] * 255).astype(np.uint8))
         if garbage_available:
             cv.imwrite(os.path.join(dir, f"{i:02}", "garbage.png"), garbage_patch[0])
