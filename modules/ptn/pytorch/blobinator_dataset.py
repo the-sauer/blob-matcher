@@ -12,6 +12,7 @@ import os
 from typing import Any, Generator, NotRequired, Sequence, TypeAlias, TypedDict
 
 import cv2 as cv
+from matplotlib import pyplot as plt
 import numpy as np
 import pdf2image
 import tensorflow as tf
@@ -51,16 +52,16 @@ class BlobinatorDataset(ABC):
         # files = res["files_created"]
         files = ["blob_pattern_1DA.json", "blob_pattern_1DA.png"]
         blob_metadata: BoardBundle = { "blobs": [] }
-        self.blobs = np.zeros(shape=(1, cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
+        self.blobs = np.zeros(shape=(cfg.BLOBINATOR.PATTERN_WIDTH, cfg.BLOBINATOR.PATTERN_HEIGHT))
         for file in files:
             full_path = os.path.join(cfg.BLOBINATOR.BOARD_DIR, file)
             if file.endswith(".json"):
                 with open(full_path) as f:
                     blob_metadata = json.loads(f.read())
             elif file.endswith(".png"):
-                self.blobs[0, :, :] = cv.imread(full_path, cv.IMREAD_GRAYSCALE)
+                self.blobs = cv.imread(full_path, cv.IMREAD_GRAYSCALE)
             elif file.endswith(".pdf"):
-                self.blobs[0, :, :] = np.array(pdf2image.convert_from_path(full_path, grayscale=True)[0])
+                self.blobs = np.array(pdf2image.convert_from_path(full_path, grayscale=True)[0])
             else:
                 logging.warning(f"Unrecognised file '{file}'")
 
@@ -92,11 +93,14 @@ class BlobinatorDataset(ABC):
 
         self.homographies = [
             self.sample_homography(
-                original_shape=self.blobs[0].shape,
+                original_shape=self.blobs.shape,
                 patch_shape=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)
             )
             for _ in range(len(self.backgrounds))
         ]
+
+        # Convenience transformation
+        self.normalized_to_patch_size = np.diag([32, 32, 1]) @ np.array([[1, 0, 0.5], [0, 1, 0.5], [0, 0, 1]])
 
     def sample_homography(
         self,
@@ -300,7 +304,7 @@ class BlobinatorDataset(ABC):
             An image with the blobsheet mapped in front of a background.
         """
         warped_blobs = cv.warpPerspective(
-            self.blobs[0, :, :],
+            self.blobs,
             homography,
             (self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO),
             background,
@@ -405,83 +409,91 @@ class BlobinatorDataset(ABC):
         translation = np.identity(3)
         translation[:2,2] = location
         return translation @ rotation @ scale
+    
+    def ellipse_to_affine_inv(self, ellipse: Ellipse) -> np.ndarray:
+        """
+        Finds an affine transformation that transforms the ellipse into a unit circle.
+
+        Parameters
+        ----------
+            ellipse: The ellipse which should be transformed into the unit circle .
+
+        Returns
+        -------
+            An (3,3) array representing the affine transformation.
+        """
+        location, (semi_major_axis, semi_minor_axis), angle = ellipse
+        scale = np.diag([
+            semi_major_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            semi_minor_axis * self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR,
+            1
+        ])
+        rotation = np.identity(3)
+        rotation[:2,:] = cv.getRotationMatrix2D((0,0), -angle * 180 / np.pi, 1)
+        translation = np.identity(3)
+        translation[:2,2] = location
+        affine = translation @ rotation @ scale
+        affine[:2,:] = cv.invertAffineTransform(affine[:2,:])
+        return affine
+    
+    def get_patch(self, img, A, pad_with=255): 
+        A_inv = np.identity(3)
+        A_inv[:2,:] = cv.invertAffineTransform(A[:2,:])
+        patch_size = 32
+        patch_transform = np.diag([patch_size, patch_size, 1]) @ np.array([[1,0,0.5], [0,1,0.5], [0,0,1]]) @ A_inv
+        patch = cv.warpAffine(img, patch_transform[:2,:], (patch_size, patch_size), borderMode=cv.BORDER_CONSTANT, borderValue=pad_with)
+        return patch
 
 
-class BlobinatorTrainDataset(BlobinatorDataset):
-    def __getitem__(self, index):
-        background = self.backgrounds[index // len(self.keypoints)]
-        transform = self.homographies[index // len(self.keypoints)]
-        mapped_image = self.map_blobs(background, transform)
-        #mapped_keypoints = self.map_keypoints(transform)
-        k = self.keypoints[index % len(self.keypoints)]
-        # k_mapped = mapped_keypoints[index % len(self.keypoints)]
-        # normalized_k = self.normalize_keypoint(
-        #     k, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        # )
-        # normalized_k_mapped = self.normalize_keypoint(
-        #     k_mapped, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        # )
-        ellipse = self.conic_to_ellipse(self.keypoint_to_mapped_conic(transform, k))
+class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
+    def __iter__(self) -> Generator[tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        bool
+    ]]:
+        """
+        Yields
+        ------
+            A tuple consisting of
+                - the anchor patch,
+                - a positive patch (i.e.) the corresponding patch to the anchor patch in the warped image,
+                - an optional garbage patch, which describes a random detection in the background, and
+                - a boolean flag whether there is a garbage patch available.
+        """
+        for homography, background in zip(self.homographies, self.backgrounds):
+            warped_image = self.map_blobs(background, homography)
+            garbage_keypoints: Sequence[Keypoint] = []  # TODO: Find garbage keypoints
+            for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
+                # TODO: Log-polar transform
+                anchor_patch_transform = self.ellipse_to_affine((keypoint[0], (keypoint[1], keypoint[1]), 0))
+                anchor_patch = self.get_patch(self.blobs, anchor_patch_transform)
+                positive_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(homography, keypoint)))
+                positive_patch = self.get_patch(warped_image, positive_patch_transform)
+
+                garbage_available = False
+                garbage_patch = np.zeros(shape=(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
+                if garbage_keypoint is not None:
+                    garbage_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(homography, garbage_keypoint)))
+                    garbage_patch = self.get_patch(warped_image, garbage_patch_transform)
+                    garbage_available = True
+                
+                yield (
+                    anchor_patch,
+                    positive_patch,
+                    garbage_patch,
+                    garbage_available
+                )
+
+
+class BlobinatorTestDataset(torch.utils.data.Dataset, BlobinatorDataset):
+    def __getitem__(self, index) -> tuple[np.ndarray, np.ndarray, float]:
+        # TODO: Implement
         return (
-            {
-                "img": self.blobs,
-                # TODO: Return meaningful values here
-                "padLeft": 0,
-                "padUp": 0,
-            },
-            {"img": mapped_image, "padLeft": 0, "padUp": 0},
-            None,
-            None,
-            "img0000",
-            f"img{(index % 4) + 1:04}",
-            1.0,
-            0.0,
-            ellipse
+            np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE)),
+            np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE)),
+            1.
         )
-
+    
     def __len__(self):
-        return len(self.backgrounds) * len(self.keypoints)
-
-    def get_pairs(self, _):
-        # Do nothing for now. This method could load new background images or so.
-        pass
-
-
-class BlobinatorTestDataset(BlobinatorDataset):
-    def __getitem__(self, index):
-        background = self.backgrounds[index // (len(self.keypoints) ** 2)]
-        transform = self.homographies[index // (len(self.keypoints) ** 2)]
-        mapped_image = self.map_blobs(background, transform)
-        mapped_keypoints = self.map_keypoints(transform)
-        keypoint_1_idx = index % (len(self.keypoints) ** 2) // len(self.keypoints)
-        keypoint_2_idx = index % len(self.keypoints)
-        k = self.keypoints[keypoint_1_idx]
-        k_mapped = mapped_keypoints[keypoint_2_idx]
-        # TODO: Normalize
-        normalized_k = self.normalize_keypoint(
-            k, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        )
-        normalized_k_mapped = self.normalize_keypoint(
-            k_mapped, into=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-        )
-        return (
-            {
-                "img": self.blobs,
-                "padLeft": self.blob_sheet_pad_left,
-                "padUp": self.blob_sheet_pad_up,
-            },
-            {"img": mapped_image, "padLeft": 0, "padUp": 0},
-            normalized_k,
-            normalized_k_mapped,
-            "img0000",
-            f"img{(index % 4) + 1:04}",
-            k,
-            k_mapped,
-            1.0,
-            1,
-            0,
-            1 if keypoint_1_idx == keypoint_2_idx else 0,
-        )
-
-    def __len__(self):
-        return len(self.backgrounds) * len(self.keypoints) * len(self.keypoints)
+        return 1
