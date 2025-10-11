@@ -16,7 +16,6 @@ from matplotlib import pyplot as plt
 import numpy as np
 import pdf2image
 import skimage
-import tensorflow as tf
 import torch
 
 
@@ -125,12 +124,10 @@ class BlobinatorDataset(ABC):
 
         **Note:** This function is an adapted version from [SuperPoints](github.com/rpautrat/SuperPoint) homography sampling.
 
-        Computes the homography transformation between a random patch in the original image
-        and a warped projection with the same image size.
-        As in `tf.contrib.image.transformtransform`, it maps the output point (warped patch) to a
-        transformed input point (original patch).
-        The original patch, which is initialized with a simple half-size centered crop, is
-        iteratively projected, scaled, rotated and translated.
+        Computes the homography transformation between a random patch in the original image and a warped projection
+        with the same image size. It maps the output point (warped patch) to a transformed input point (original
+        patch). The original patch, which is initialized with a simple half-size centered crop, is iteratively
+        projected, scaled, rotated and translated.
 
         Arguments:
             original_shape: A rank-2 `Tensor` specifying the height and width of the original image.
@@ -152,119 +149,83 @@ class BlobinatorDataset(ABC):
         Returns:
             An `array` of shape `(3,3)` corresponding to the homography.
         """
+        def _truncated_normal(loc, scale, shape):
+            result = np.random.normal(loc, scale, shape)
+            while any(result < loc - 2 * scale) or any(result > loc + 2 * scale):
+                result = np.random.normal(loc, scale, shape)
+            return result
 
         # Corners of the output image
         margin = (1 - patch_ratio) / 2
-        pts1 = margin + tf.constant(
-            [[0, 0], [0, patch_ratio], [patch_ratio, patch_ratio], [patch_ratio, 0]],
-            tf.float32,
-        )
+        pts1 = margin + np.array([[0, 0], [0, patch_ratio], [patch_ratio, patch_ratio], [patch_ratio, 0]], np.float32)
+        pts1.flags.writeable = False
         # Corners of the input patch
-        pts2 = pts1
+        pts2 = pts1.copy()
 
         # Random perspective and affine perturbations
         if perspective:
             if not allow_artifacts:
                 perspective_amplitude_x = min(perspective_amplitude_x, margin)
                 perspective_amplitude_y = min(perspective_amplitude_y, margin)
-            perspective_displacement = tf.random.truncated_normal(
-                [1], 0.0, perspective_amplitude_y / 2
-            )
-            h_displacement_left = tf.random.truncated_normal(
-                [1], 0.0, perspective_amplitude_x / 2
-            )
-            h_displacement_right = tf.random.truncated_normal(
-                [1], 0.0, perspective_amplitude_x / 2
-            )
-            pts2 += tf.stack(
-                [
-                    tf.concat([h_displacement_left, perspective_displacement], 0),
-                    tf.concat([h_displacement_left, -perspective_displacement], 0),
-                    tf.concat([h_displacement_right, perspective_displacement], 0),
-                    tf.concat([h_displacement_right, -perspective_displacement], 0),
-                ]
-            )
+            perspective_displacement = _truncated_normal(0.0, perspective_amplitude_y / 2, (1,))
+            h_displacement_left = _truncated_normal(0.0, perspective_amplitude_x / 2, (1,))
+            h_displacement_right = _truncated_normal(0.0, perspective_amplitude_x / 2, (1,))
+            pts2 += np.stack([
+                np.concatenate([h_displacement_left, perspective_displacement], axis=0),
+                np.concatenate([h_displacement_left, -perspective_displacement], axis=0),
+                np.concatenate([h_displacement_right, perspective_displacement], axis=0),
+                np.concatenate([h_displacement_right, -perspective_displacement], axis=0),
+            ])
 
         # Random scaling
         # sample several scales, check collision with borders, randomly pick a valid one
         if scaling:
-            scales = tf.concat(
-                [[1.0], tf.random.truncated_normal([n_scales], 1, scaling_amplitude / 2)], 0
-            )
-            center = tf.reduce_mean(pts2, axis=0, keepdims=True)
-            scaled = (
-                tf.expand_dims(pts2 - center, axis=0)
-                * tf.expand_dims(tf.expand_dims(scales, 1), 1)
-                + center
-            )
+            scales = np.concatenate([[1.0], _truncated_normal(1, scaling_amplitude / 2, (n_scales,))], 0)
+            center = np.mean(pts2, axis=0, keepdims=True)
+            scaled = (np.expand_dims(pts2 - center, axis=0) * np.expand_dims(np.expand_dims(scales, 1), 1) + center)
             if allow_artifacts:
-                valid = tf.range(1, n_scales + 1)  # all scales are valid except scale=1
+                valid = np.arange(start=1, stop=n_scales + 1)  # all scales are valid except scale=1
             else:
-                valid = tf.where(
-                    tf.reduce_all((scaled >= 0.0) & (scaled <= 1.0), [1, 2])
-                )[:, 0]
-            idx = valid[
-                tf.random.uniform((), maxval=tf.shape(valid)[0], dtype=tf.int32)
-            ]
+                valid = np.where(np.all((scaled >= 0.0) & (scaled <= 1.0), axis=(1, 2)))[0]
+            idx = valid[int(np.random.uniform(low=0, high=valid.shape[0]))]
             pts2 = scaled[idx]
 
         # Random translation
         if translation:
-            t_min, t_max = tf.reduce_min(pts2, axis=0), tf.reduce_min(1 - pts2, axis=0)
+            t_min, t_max = np.min(pts2, axis=0), np.min(1 - pts2, axis=0)
             if allow_artifacts:
                 t_min += translation_overflow
                 t_max += translation_overflow
-            pts2 += tf.expand_dims(
-                tf.stack(
-                    [
-                        tf.random.uniform((), -t_min[0], t_max[0]),
-                        tf.random.uniform((), -t_min[1], t_max[1]),
-                    ]
-                ),
+            pts2 += np.expand_dims(
+                np.stack([
+                    np.random.uniform(low=-t_min[0], high=t_max[0]),
+                    np.random.uniform(low=-t_min[1], high=t_max[1])
+                ]),
                 axis=0,
             )
 
         # Random rotation
         # sample several rotations, check collision with borders, randomly pick a valid one
         if rotation:
-            angles = tf.linspace(
-                tf.constant(-max_angle), tf.constant(max_angle), n_angles
+            angles = np.linspace(-max_angle, max_angle, n_angles)
+            angles = np.concat([[0.0], angles], axis=0)  # in case no rotation is valid
+            center = np.mean(pts2, axis=0, keepdims=True)
+            rot_mat = np.reshape(
+                np.stack([np.cos(angles), -np.sin(angles), np.sin(angles), np.cos(angles)], axis=1),
+                (-1, 2, 2)
             )
-            angles = tf.concat([[0.0], angles], axis=0)  # in case no rotation is valid
-            center = tf.reduce_mean(pts2, axis=0, keepdims=True)
-            rot_mat = tf.reshape(
-                tf.stack(
-                    [tf.cos(angles), -tf.sin(angles), tf.sin(angles), tf.cos(angles)],
-                    axis=1,
-                ),
-                [-1, 2, 2],
-            )
-            rotated = (
-                tf.matmul(
-                    tf.tile(
-                        tf.expand_dims(pts2 - center, axis=0), [n_angles + 1, 1, 1]
-                    ),
-                    rot_mat,
-                )
-                + center
-            )
+            rotated = np.tile(np.expand_dims(pts2 - center, axis=0), (n_angles + 1, 1, 1)) @ rot_mat + center
             if allow_artifacts:
-                valid = tf.range(
-                    1, n_angles + 1
-                )  # all angles are valid, except angle=0
+                valid = np.arange(1, n_angles + 1)  # all angles are valid, except angle=0
             else:
-                valid = tf.where(
-                    tf.reduce_all((rotated >= 0.0) & (rotated <= 1.0), axis=[1, 2])
-                )[:, 0]
-            idx = valid[
-                tf.random.uniform((), maxval=tf.shape(valid)[0], dtype=tf.int32)
-            ]
+                valid = np.where(np.all((rotated >= 0.0) & (rotated <= 1.0), axis=(1, 2)))[0]
+            idx = valid[int(np.random.uniform(low=0, high=valid.shape[0]))]
             pts2 = rotated[idx]
 
         # Rescale to actual size
-        original_shape = tf.cast(original_shape[::-1], tf.float32)  # different convention [y, x]
-        pts1 *= tf.expand_dims(original_shape, axis=0)
-        pts2 *= tf.expand_dims(original_shape, axis=0)
+        original_shape = original_shape[::-1]#.astype(np.float32)  # different convention [y, x]
+        pts1 = pts1 * np.expand_dims(original_shape, axis=0)
+        pts2 = pts2 * np.expand_dims(original_shape, axis=0)
 
         def ax(p, q):
             return [p[0], p[1], 1, 0, 0, 0, -p[0] * q[0], -p[1] * q[0]]
@@ -272,13 +233,9 @@ class BlobinatorDataset(ABC):
         def ay(p, q):
             return [0, 0, 0, p[0], p[1], 1, -p[0] * q[1], -p[1] * q[1]]
 
-        a_mat = tf.stack(
-            [f(pts1[i], pts2[i]) for i in range(4) for f in (ax, ay)], axis=0
-        )
-        p_mat = tf.transpose(
-            tf.stack([[pts2[i][j] for i in range(4) for j in range(2)]], axis=0)
-        )
-        flat_homography = tf.transpose(tf.linalg.lstsq(a_mat, p_mat, fast=True)).numpy()
+        a_mat = np.stack([f(pts1[i], pts2[i]) for i in range(4) for f in (ax, ay)], axis=0)
+        p_mat = np.stack([[pts2[i][j] for i in range(4) for j in range(2)]], axis=0).T
+        flat_homography = np.linalg.lstsq(a_mat, p_mat)[0].T
         homography = np.ones(shape=(3, 3))
         homography[0, :] = flat_homography[0][:3]
         homography[1, :] = flat_homography[0][3:6]
@@ -477,6 +434,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
         """
         for homography, background in zip(self.homographies, self.backgrounds):
             warped_image = self.map_blobs(background, homography)
+            cv.imwrite("warped_image.png", warped_image)
             garbage_keypoints: Sequence[Keypoint] = []  # TODO: Find garbage keypoints
             for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
                 # TODO: Log-polar transform
