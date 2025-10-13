@@ -364,34 +364,39 @@ class BlobinatorDataset(ABC):
         translation[:2, 2] = location
         return translation @ rotation @ scale
 
-    def ellipse_to_affine_inv(self, ellipse: Ellipse) -> np.typing.NDArray:
+    def get_patch(self, img, A, pad_with=1.0):
         """
-        Finds an affine transformation that transforms the ellipse into a unit circle.
+        Extract a log-polar interpolated patch from an affine patch.
 
-        Parameters:
-            ellipse: The ellipse which should be transformed into the unit circle .
+        The method used to extract the patch is now described in more detail. Given patch coordinates $(x,y)$ with
+        $0 \\leq x, y < P$ for a given patch size $P$ we first normalize them into the half-open interval $[0,1)$:
+        $\\overline{x} = \\frac{x}{P}, \\overline{x} = \\frac{x}{P}$. We set $x$ to be the radial dimension and $y$ to
+        be the angular dimension of the patch. We can obtain the log-polar coordinates by:
+        $$r = e^{\\ln(PSF) \\cdot \\overline{x}}$$
+        and
+        $$\\theta = 2 \\cdot \\pi \\cdot \\overline{x}$$
+        where $PSF$ is the *Patch-Scale-Factor*, a configuration value that controls the size of the patch in relation
+        to the radius of the blob. Note that $r \\in [1, PSF)$ and $\\theta \\in [0, 2\\pi)$.
+
+        Arguments:
+            img: The source image.
+            A: An affine transform that maps the unit circle into the keypoints.
+            pad_with: A color value to use for padding if part of the patch lie outside the source image.
 
         Returns:
-            An (3,3) array representing the affine transformation.
-        """
-        location, (semi_major_axis, semi_minor_axis), angle = ellipse
-        scale = np.diag([semi_major_axis, semi_minor_axis, 1])
-        rotation = np.identity(3)
-        rotation[:2, :] = cv.getRotationMatrix2D((0, 0), -angle * 180 / np.pi, 1)
-        translation = np.identity(3)
-        translation[:2, 2] = location
-        affine = translation @ rotation @ scale
-        affine[:2, :] = cv.invertAffineTransform(affine[:2, :])
-        return affine
-
-    def get_patch(self, img, A, pad_with=255):
+            A 2-dim `numpy` Array containing the image data of the patch.
+            """
         def backwards_map(cr):
             coords = np.empty_like(cr)
             for i in range(cr.shape[0]):
-                theta = cr[i, 0] * 2 * np.pi / self.cfg.INPUT.IMAGE_SIZE
-                rho = cr[i, 1] * np.log(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR) / self.cfg.INPUT.IMAGE_SIZE
-                r = np.exp(rho)
-                coords[i] = (A @ np.array([r * np.cos(theta), r * np.sin(theta), 1]))[:2]
+                normalized_x = cr[i, 0] / self.cfg.INPUT.IMAGE_SIZE     # x in [0,1)
+                normalized_y = cr[i, 1] / self.cfg.INPUT.IMAGE_SIZE     # y in [0,1)
+
+                r = np.exp(np.log(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR) * normalized_x)   # r in [1, PATCH_SCALE_FACTOR)
+                x_source = r * np.cos(2 * np.pi * normalized_y)
+                y_source = r * np.sin(2 * np.pi * normalized_y)
+
+                coords[i] = (A @ np.array([x_source, y_source, 1]))[:2]
             return coords
         return skimage.transform.warp(
             img,
@@ -426,7 +431,6 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
             # cv.imwrite("warped_image.png", np.clip(warped_image * 255, min=0, max=255).astype(np.uint8))
             garbage_keypoints: Sequence[Keypoint] = []  # TODO: Find garbage keypoints
             for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
-                # TODO: Log-polar transform
                 # TODO: Augmentation
                 anchor_patch_transform = self.ellipse_to_affine((keypoint[0], (keypoint[1], keypoint[1]), 0))
 
