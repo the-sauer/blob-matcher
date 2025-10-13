@@ -68,7 +68,7 @@ class BlobinatorDataset(ABC):
             elif file.endswith(".png"):
                 read_blobs = cv.imread(full_path, cv.IMREAD_GRAYSCALE)
                 if read_blobs is not None:
-                    self.blobs = read_blobs / 255
+                    self.blobs = (read_blobs / 255).astype(np.float32)
                 else:
                     logging.error("Could not read blob board")
             elif file.endswith(".pdf"):
@@ -423,7 +423,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
         """
         for homography, background in zip(self.homographies, self.backgrounds):
             warped_image = self.map_blobs(background, homography)
-            cv.imwrite("warped_image.png", (warped_image * 255).astype(np.uint8))
+            # cv.imwrite("warped_image.png", np.clip(warped_image * 255, min=0, max=255).astype(np.uint8))
             garbage_keypoints: Sequence[Keypoint] = []  # TODO: Find garbage keypoints
             for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
                 # TODO: Log-polar transform
