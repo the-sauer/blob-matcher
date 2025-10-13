@@ -124,6 +124,7 @@ def loss_L2Net(anchor,
 
 def loss_HardNet_weighted(anchor,
                           positive,
+                          garbage,
                           anchor_swap=False,
                           margin=1.0,
                           batch_reduce='min',
@@ -144,13 +145,31 @@ def loss_HardNet_weighted(anchor,
     mask = (dist_without_min_on_diag.ge(0.008).float() - 1.0) * (-1)
     mask = mask.type_as(dist_without_min_on_diag) * 10
     dist_without_min_on_diag = dist_without_min_on_diag + mask
+    
+    garbage_dist_matrix = torch.concat((
+        distance_matrix_vector(anchor, garbage),
+        distance_matrix_vector(positive, garbage)
+    ))
     if batch_reduce == 'min':
         min_neg_idx = torch.min(dist_without_min_on_diag, 1)[1]
 
         min_neg = torch.min(dist_without_min_on_diag, 1)[0]
+        min_neg_garbage = torch.min(garbage_dist_matrix, 1)[0]
         if anchor_swap:
             min_neg2 = torch.min(dist_without_min_on_diag, 0)[0]
-            min_neg = torch.min(min_neg, min_neg2)
+            assert min_neg_garbage.size(0) == 2 * min_neg.size(0)
+            min_neg = torch.min(
+                min_neg,
+                min_neg2
+            )
+            min_neg = torch.min(
+                min_neg,
+                min_neg_garbage[:min_neg.size(0)]
+            )
+            min_neg = torch.min(
+                min_neg,
+                min_neg_garbage[min_neg.size(0):]
+            )
 
         min_neg = min_neg
         pos = pos1
@@ -265,3 +284,13 @@ def global_orthogonal_regularization(anchor, negative):
         torch.mean(torch.pow(neg_dis, 2)) - 1.0 / dim, min=0.0)
 
     return gor
+
+
+# For testing and debugging
+if __name__ == "__main__":
+    anchor = torch.rand(10, 128).cuda()
+    positive = torch.rand(10, 128).cuda() 
+    garbage = torch.rand(6, 128).cuda()
+
+    loss, _ = loss_HardNet_weighted(anchor, positive, garbage, anchor_swap=True)
+    print(loss)

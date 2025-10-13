@@ -158,7 +158,8 @@ def train(cfg,
 
         loss, min_neg_idx = loss_HardNet_weighted(
             out_a,
-            torch.cat((out_p, out_g), dim=0),
+            out_p,
+            out_g,
             anchor_swap=cfg.TRAINING.ANCHOR_SWAP,
             margin=cfg.TRAINING.MARGIN,
             batch_reduce=cfg.TRAINING.BATCH_REDUCE,
