@@ -141,11 +141,10 @@ def train(cfg,
         # print(batch_idx)
 
         img_a, img_p, img_g, garbage_available = data
+        img_g = img_g[garbage_available]
         img_a = img_a.to(device)
         img_p = img_p.to(device)
         img_g = img_g.to(device)
-
-        # TODO: Filter garbage
 
         # forward-propagate input through network and get [batchSize x 1 x
         # resolution x resolution] output array

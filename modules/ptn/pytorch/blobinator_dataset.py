@@ -408,6 +408,9 @@ class BlobinatorDataset(ABC):
 
 
 class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
+    def convert_cv_keypoint(self, keypoint: cv.KeyPoint) -> Keypoint:
+        return np.array(keypoint.pt), keypoint.size, keypoint.angle * np.pi / 180
+
     def __iter__(self) -> Generator[
         tuple[
             np.typing.NDArray,
@@ -426,10 +429,17 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                 - an optional garbage patch, which describes a random detection in the background, and
                 - a boolean flag whether there is a garbage patch available.
         """
+        sift = cv.SIFT_create()
         for homography, background in zip(self.homographies, self.backgrounds):
             warped_image = self.map_blobs(background, homography)
             # cv.imwrite("warped_image.png", np.clip(warped_image * 255, min=0, max=255).astype(np.uint8))
-            garbage_keypoints: Sequence[Keypoint] = []  # TODO: Find garbage keypoints
+            garbage_mask = np.zeros(shape=background.shape, dtype=np.uint8)
+            garbage_mask[100:-100,100:-100] = np.ones(
+                shape=(background.shape[0] - 200, background.shape[1] - 200),
+                dtype=np.uint8
+            )
+            detections = sift.detect((background * 255).astype(np.uint8), garbage_mask)
+            garbage_keypoints = map(self.convert_cv_keypoint, np.random.permutation(detections))
             for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
                 # TODO: Augmentation
                 anchor_patch_transform = self.ellipse_to_affine((keypoint[0], (keypoint[1], keypoint[1]), 0))
@@ -443,12 +453,12 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                 positive_patch = self.get_patch(warped_image, positive_patch_transform)
 
                 garbage_available = False
-                garbage_patch = np.zeros(shape=(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
+                garbage_patch = np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
                 if garbage_keypoint is not None:
                     garbage_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(
                         self.keypoint_to_mapped_conic(homography, garbage_keypoint)
                     ))
-                    garbage_patch = self.get_patch(warped_image, garbage_patch_transform)
+                    garbage_patch = self.get_patch(background, garbage_patch_transform)
                     garbage_available = True
 
                 yield (
@@ -486,7 +496,7 @@ def main():
         cv.imwrite(os.path.join(directory, f"{i:02}", "anchor.png"), (anchor_patch[0] * 255).astype(np.uint8))
         cv.imwrite(os.path.join(directory, f"{i:02}", "positive.png"), (positive_patch[0] * 255).astype(np.uint8))
         if garbage_available:
-            cv.imwrite(os.path.join(directory, f"{i:02}", "garbage.png"), garbage_patch[0])
+            cv.imwrite(os.path.join(directory, f"{i:02}", "garbage.png"), (garbage_patch[0] * 255).astype(np.uint8))
 
 
 if __name__ == "__main__":
