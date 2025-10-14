@@ -11,3 +11,7 @@
   - Configuration value `TRAINING.SOFT_AUG` turns this on and off.
 - `Hardnet.forward` can also work with patches directly if the argument `theta == None`
 - `args.hard_augm` (turned off by default) controls whether first dimension is flipped.
+
+- Pytorch Augmentation
+  - Color jitter, gaussian blur, gaussian noise
+- more scale variation in homography
