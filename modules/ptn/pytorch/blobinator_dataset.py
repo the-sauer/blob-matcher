@@ -7,6 +7,7 @@ from functools import reduce
 from itertools import chain, repeat
 import json
 import logging
+import math
 import os
 import random
 import sys
@@ -390,7 +391,7 @@ class BlobinatorDataset(ABC):
 
         return location, (semi_major_axis, semi_minor_axis), angle
 
-    def ellipse_to_affine(self, ellipse: Ellipse) -> np.typing.NDArray:
+    def ellipse_to_affine(self, ellipse: Ellipse) -> torch.Tensor:
         """
         Finds an affine transformation that transforms the unit circle into the ellipse.
 
@@ -406,9 +407,9 @@ class BlobinatorDataset(ABC):
         rotation[:2, :] = cv.getRotationMatrix2D((0, 0), int(-angle * 180 / np.pi), 1)
         translation = np.identity(3)
         translation[:2, 2] = location
-        return torch.tensor(translation @ rotation @ scale)
+        return torch.tensor(translation @ rotation @ scale, dtype=torch.float32)
 
-    def get_patch(self, img, A, pad_with=1.0):
+    def get_patch(self, img: torch.Tensor, A: torch.Tensor, pad_with=1.0):
         """
         Extract a log-polar interpolated patch from an affine patch.
 
@@ -430,24 +431,61 @@ class BlobinatorDataset(ABC):
         Returns:
             A 2-dim `numpy` Array containing the image data of the patch.
             """
-        def backwards_map(cr):
-            coords = torch.empty(cr.shape)
-            for i in range(cr.shape[0]):
-                normalized_x = cr[i, 0] / self.cfg.INPUT.IMAGE_SIZE     # x in [0,1)
-                normalized_y = cr[i, 1] / self.cfg.INPUT.IMAGE_SIZE     # y in [0,1)
-                r = np.exp(np.log(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR) * normalized_x)   # r in [1, PATCH_SCALE_FACTOR)
-                x_source = r * np.cos(2 * np.pi * normalized_y)
-                y_source = r * np.sin(2 * np.pi * normalized_y)
+        device = img.device
+        P = self.cfg.INPUT.IMAGE_SIZE
+        PSF = self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR
 
-                coords[i] = (A @ torch.tensor([x_source, y_source, 1]))[:2]
-            return coords
-        return torch.from_numpy(skimage.transform.warp(
-            img[0],
-            backwards_map,
-            output_shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
-            mode="constant",
-            cval=pad_with
-        )).unsqueeze(0)
+        # Create normalized grid for output patch
+        y, x = torch.meshgrid(
+            torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+            torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+            indexing='ij'
+        )
+        # Each (x,y) is a location in patch coords, shape (P, P)
+        # We treat x as radial and y as angular dimension
+
+        # Compute log-polar coordinates
+        r = torch.exp(torch.log(torch.tensor(PSF, device=device)) * x)  # [1, PSF)
+        theta = 2 * math.pi * y                                         # [0, 2π)
+
+        # Convert to Cartesian coordinates in source patch
+        xs = r * torch.cos(theta)
+        ys = r * torch.sin(theta)
+
+        # Stack homogeneous coords
+        ones = torch.ones_like(xs)
+        coords = torch.stack([xs, ys, ones], dim=-1)  # (P, P, 3)
+
+        # Apply affine transform A
+        coords = coords @ A.T
+        x_src, y_src = coords[..., 0], coords[..., 1]
+
+        # Normalize coordinates to [-1, 1] for grid_sample
+        Hs, Ws = img.shape[2:]
+        x_norm = 2 * (x_src / (Ws - 1)) - 1
+        y_norm = 2 * (y_src / (Hs - 1)) - 1
+        grid = torch.stack([x_norm, y_norm], dim=-1).unsqueeze(0)  # (1, P, P, 2)
+
+        # Sample the image
+        warped = torch.nn.functional.grid_sample(
+            img, grid,
+            mode='bilinear',
+            padding_mode='zeros',  # outside = 0
+            align_corners=True
+        )
+
+        # Blend with constant background
+        mask = torch.nn.functional.grid_sample(
+            torch.ones((1, 1, Hs, Ws), device=device),
+            grid,
+            mode='nearest',
+            padding_mode='zeros',
+            align_corners=True
+        )
+
+        background = torch.full_like(warped, pad_with)
+        output = warped * mask + background * (1 - mask)
+        return output
 
 
 class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
@@ -486,7 +524,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
             warped_images = transforms(warped_images)
             for (homography, background, warped_image) in zip(self.homographies, self.backgrounds, warped_images):
                 # warped_image = self.map_blobs(background, homography)
-                cv.imwrite(f"./data/warped_image/{i:03}.png", (warped_image[0] * 255).numpy().astype(np.uint8))
+                # cv.imwrite(f"./data/warped_image/{i:03}.png", (warped_image[0] * 255).numpy().astype(np.uint8))
                 i += 1
                 garbage_mask = np.zeros(shape=background[0].shape, dtype=np.uint8)
                 garbage_mask[100:-100, 100:-100] = np.ones(
@@ -502,7 +540,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                     # TODO: Augmentation
                     anchor_patch_transform = self.ellipse_to_affine((keypoint[:2], (keypoint[2], keypoint[2]), 0))
 
-                    anchor_patch = self.get_patch(self.blobs, anchor_patch_transform)
+                    anchor_patch = self.get_patch(self.blobs.unsqueeze(0), anchor_patch_transform)
                     # TODO: Augmentation
                     try:
                         positive_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(
@@ -511,7 +549,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                         )))
                     except AssertionError:
                         continue    # Encountered invalid ellipse
-                    positive_patch = self.get_patch(warped_image, positive_patch_transform)
+                    positive_patch = self.get_patch(warped_image.unsqueeze(0), positive_patch_transform)
 
                     garbage_available = False
                     garbage_patch = np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
@@ -520,7 +558,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                             garbage_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(
                                 self.keypoint_to_mapped_conic(homography, garbage_keypoint)
                             ))
-                            garbage_patch = self.get_patch(background, garbage_patch_transform)
+                            garbage_patch = self.get_patch(background.unsqueeze(0), garbage_patch_transform)
                             garbage_available = True
                         except AssertionError:
                             pass    # Encountered invalid ellipse
