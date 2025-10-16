@@ -130,3 +130,25 @@ def save_hist(folder, root, name, x, bins=50, range=(1, 4), cum=False):
         plt.savefig(os.path.join(folder, name + '_stn_scales_hist.png'))
     else:
         plt.savefig(os.path.join(folder, name + '_ptn_scales_hist.png'))
+
+
+def flip(f):
+    def flipped_f(y, x):
+        return f(x, y)
+    return flipped_f
+
+
+def fchain(*args):
+    def function(x):
+        for f in reversed(args):
+            x = f(x)
+        return x
+    return function
+
+
+def curry(f):
+    def function(x):
+        def inner(y):
+            return f(x,y)
+        return inner
+    return function

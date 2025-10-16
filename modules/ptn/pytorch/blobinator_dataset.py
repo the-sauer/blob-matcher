@@ -3,14 +3,18 @@ This module provides an extension to learn the features of the Blobinator calibr
 """
 
 from abc import ABC
+from functools import reduce
 from itertools import chain, repeat
 import json
 import logging
 import os
-from typing import Any, Generator, NotRequired, Sequence, TypeAlias, TypedDict
+import random
+import sys
+from typing import Any, Generator, NotRequired, TypeAlias, TypedDict
 
 
 import cv2 as cv
+import kagglehub
 import kornia
 import numpy as np
 import pdf2image
@@ -19,11 +23,12 @@ import torch
 from torchvision.transforms import v2
 
 
+sys.path.insert(0, os.getcwd())
+
+from modules.hardnet.utils import curry, fchain, flip
+
+
 Ellipse: TypeAlias = tuple[np.typing.NDArray, tuple[float, float], float]
-
-
-Keypoint: TypeAlias = tuple[np.typing.NDArray, float, float]
-
 
 class BlobParam(TypedDict):
     value: float
@@ -81,22 +86,45 @@ class BlobinatorDataset(ABC):
             else:
                 logging.warning(f"Unrecognised file '{file}'")
 
-        self.keypoints: Sequence[Keypoint] = list(map(
-            lambda k: (np.array([k["center"][0]["value"] - 1, k["center"][1]["value"] - 1]), k["σ"]["value"], 0),
+        self.keypoints = torch.stack(list(map(
+            lambda k: torch.tensor([k["center"][0]["value"] - 1, k["center"][1]["value"] - 1, k["σ"]["value"], 0]),
             blob_metadata["blobs"]
-        ))
+        )))
+        path = os.path.join(kagglehub.dataset_download(self.cfg.BLOBINATOR.BACKGROUND_DATASET), "indoorCVPR_09/images")
+        self.background_filenames = fchain(
+            curry(flip(random.sample))(self.cfg.BLOBINATOR.NUM_BACKGROUND_IMAGES),
+            list,
+            curry(filter)(curry(flip(str.endswith))(".jpg")),
+            curry(reduce)(list.__add__),
+            curry(map)(lambda x: list(map(lambda f: os.path.join(x[0], f), x[2])))
+        )(os.walk(path))
 
         self.backgrounds = torch.zeros(
             size=(
-                len(list(filter(lambda x: x.endswith(".jpg"), os.listdir((cfg.BLOBINATOR.BACKGROUND_DIR))))),
+                self.cfg.BLOBINATOR.NUM_BACKGROUND_IMAGES_BATCH,
                 1,
                 self.cfg.TRAINING.PAD_TO,
                 self.cfg.TRAINING.PAD_TO
             ),
             dtype=torch.float32
         )
-        for i, img_path in enumerate(filter(lambda x: x.endswith(".jpg"), os.listdir(cfg.BLOBINATOR.BACKGROUND_DIR))):
-            img = cv.imread(os.path.join(cfg.BLOBINATOR.BACKGROUND_DIR, img_path), cv.IMREAD_GRAYSCALE)
+        self.background_index = 0
+
+    def load_new_background_batch(self):
+        if self.background_index + self.cfg.BLOBINATOR.NUM_BACKGROUND_IMAGES_BATCH > self.cfg.BLOBINATOR.NUM_BACKGROUND_IMAGES:
+            new_size = self.cfg.BLOBINATOR.NUM_BACKGROUND_IMAGES - self.background_index
+            self.backgrounds = torch.zeros(
+                size=(
+                    new_size,
+                    1,
+                    self.cfg.TRAINING.PAD_TO,
+                    self.cfg.TRAINING.PAD_TO
+                ),
+                dtype=torch.float32
+            )
+        for i in range(self.backgrounds.size(0)):
+            img_path = self.background_filenames[self.background_index + i]
+            img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
             if img is None:
                 logging.error(f"Failed to load image '{img_path}'")
                 continue
@@ -109,16 +137,17 @@ class BlobinatorDataset(ABC):
                 crop2 = crop1 if 2 * crop1 + img.shape[0] == img.shape[1] else crop1 + 1
                 img = img[:, crop1:-crop2]
             self.backgrounds[i, 0, :, :] = torch.as_tensor(
-                cv.resize(img, dsize=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)) / 255,
+                cv.resize(img, dsize=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)) / 255,
                 dtype=torch.float32
             )
+        self.background_index += self.backgrounds.size(0)
 
         self.homographies = torch.stack([
             self.sample_homography(
                 original_shape=self.blobs.shape[1:],
-                patch_shape=(cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)
+                patch_shape=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
             )
-            for _ in range(len(self.backgrounds))
+            for _ in range(self.backgrounds.size(0))
         ])
 
     def sample_homography(
@@ -131,14 +160,14 @@ class BlobinatorDataset(ABC):
         translation=True,
         n_scales=5,
         n_angles=25,
-        scaling_amplitude=0.1,
+        scaling_amplitude=32,
         perspective_amplitude_x=0.1,
         perspective_amplitude_y=0.1,
         patch_ratio=0.5,
         max_angle=np.pi / 2,
         allow_artifacts=False,
         translation_overflow=0.0,
-    ) -> np.typing.NDArray:
+    ) -> torch.Tensor:
         """Sample a random valid homography.
 
         **Note:** This function is an adapted version from [SuperPoints](github.com/rpautrat/SuperPoint) homography
@@ -188,9 +217,9 @@ class BlobinatorDataset(ABC):
             if not allow_artifacts:
                 perspective_amplitude_x = min(perspective_amplitude_x, margin)
                 perspective_amplitude_y = min(perspective_amplitude_y, margin)
-            perspective_displacement = _truncated_normal(0.0, perspective_amplitude_y / 2, (1,))
-            h_displacement_left = _truncated_normal(0.0, perspective_amplitude_x / 2, (1,))
-            h_displacement_right = _truncated_normal(0.0, perspective_amplitude_x / 2, (1,))
+            perspective_displacement = np.random.normal(0.0, perspective_amplitude_y / 2, (1,))
+            h_displacement_left = np.random.normal(0.0, perspective_amplitude_x / 2, (1,))
+            h_displacement_right = np.random.normal(0.0, perspective_amplitude_x / 2, (1,))
             pts2 += np.stack([
                 np.concatenate([h_displacement_left, perspective_displacement], axis=0),
                 np.concatenate([h_displacement_left, -perspective_displacement], axis=0),
@@ -201,7 +230,7 @@ class BlobinatorDataset(ABC):
         # Random scaling
         # sample several scales, check collision with borders, randomly pick a valid one
         if scaling:
-            scales = np.concatenate([[1.0], _truncated_normal(1, scaling_amplitude / 2, (n_scales,))], 0)
+            scales = np.concatenate([[1.0], np.random.normal(1, scaling_amplitude / 2, (n_scales,))], 0)
             center = np.mean(pts2, axis=0, keepdims=True)
             scaled = np.expand_dims(pts2 - center, axis=0) * np.expand_dims(np.expand_dims(scales, 1), 1) + center
             if allow_artifacts:
@@ -296,7 +325,7 @@ class BlobinatorDataset(ABC):
         warped_blobs = warped_blobs * mask + background * (1 - mask)
         return warped_blobs
 
-    def keypoint_to_mapped_conic(self, homography: torch.Tensor, k: Keypoint) -> torch.Tensor:
+    def keypoint_to_mapped_conic(self, homography: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
         """
         Transforms a keypoint into a conic section and warps it via a homography.
 
@@ -311,9 +340,11 @@ class BlobinatorDataset(ABC):
         Returns:
             An array of shape (3,3) representing the conic section of the mapped keypoint.
         """
-        location, scale, _ = k
-        x = location[0]
-        y = location[1]
+        #location = k[:2]
+        scale = k[2]
+
+        x = k[0]
+        y = k[1]
         conic = torch.tensor([[1, 0, -x], [0, 1, -y], [-x, -y, x**2 + y**2 - scale**2]], dtype=torch.float32)
         inverse_homography = torch.linalg.inv(homography)
         mapped_conic = torch.transpose(inverse_homography, 0, 1) @ conic @ inverse_homography
@@ -420,8 +451,8 @@ class BlobinatorDataset(ABC):
 
 
 class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
-    def convert_cv_keypoint(self, keypoint: cv.KeyPoint) -> Keypoint:
-        return np.array(keypoint.pt), keypoint.size, keypoint.angle * np.pi / 180
+    def convert_cv_keypoint(self, keypoint: cv.KeyPoint) -> torch.Tensor:
+        return torch.tensor([*keypoint.pt, keypoint.size, keypoint.angle * np.pi / 180])
 
     def __iter__(self) -> Generator[
         tuple[
@@ -441,51 +472,65 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                 - an optional garbage patch, which describes a random detection in the background, and
                 - a boolean flag whether there is a garbage patch available.
         """
+        os.makedirs(f"./data/warped_image", exist_ok=True)
         sift = cv.SIFT_create()
-        warped_images = self.map_blobs(self.backgrounds, self.homographies)
-        transforms = v2.Compose([
-            v2.ColorJitter(),
-            v2.GaussianBlur(kernel_size=(3, 3)),
-            v2.GaussianNoise()
-        ])
-        warped_images = transforms(warped_images)
-        for homography, background, warped_image in zip(self.homographies, self.backgrounds, warped_images):
-            # warped_image = self.map_blobs(background, homography)
-            # cv.imwrite("warped_image.png", np.clip(warped_image[0].numpy() * 255, min=0, max=255).astype(np.uint8))
-            garbage_mask = np.zeros(shape=background[0].shape, dtype=np.uint8)
-            garbage_mask[100:-100, 100:-100] = np.ones(
-                shape=(background.shape[1] - 200, background.shape[2] - 200),
-                dtype=np.uint8
-            )
-            detections = sift.detect((background[0].numpy() * 255).astype(np.uint8), garbage_mask)
-            garbage_keypoints = map(self.convert_cv_keypoint, detections)
-            for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
-                # TODO: Augmentation
-                anchor_patch_transform = self.ellipse_to_affine((keypoint[0], (keypoint[1], keypoint[1]), 0))
-
-                anchor_patch = self.get_patch(self.blobs, anchor_patch_transform)
-                # TODO: Augmentation
-                positive_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(
-                    homography,
-                    keypoint
-                )))
-                positive_patch = self.get_patch(warped_image, positive_patch_transform)
-
-                garbage_available = False
-                garbage_patch = np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
-                if garbage_keypoint is not None:
-                    garbage_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(
-                        self.keypoint_to_mapped_conic(homography, garbage_keypoint)
-                    ))
-                    garbage_patch = self.get_patch(background, garbage_patch_transform)
-                    garbage_available = True
-
-                yield (
-                    anchor_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
-                    positive_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
-                    garbage_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
-                    garbage_available
+        i = 0
+        while self.background_index < self.cfg.BLOBINATOR.NUM_BACKGROUND_IMAGES:
+            self.load_new_background_batch()
+            warped_images = self.map_blobs(self.backgrounds, self.homographies)
+            transforms = v2.Compose([
+                v2.ColorJitter(),
+                v2.GaussianBlur(kernel_size=(3, 3)),
+                v2.GaussianNoise()
+            ])
+            warped_images = transforms(warped_images)
+            for (homography, background, warped_image) in zip(self.homographies, self.backgrounds, warped_images):
+                # warped_image = self.map_blobs(background, homography)
+                cv.imwrite(f"./data/warped_image/{i:03}.png", (warped_image[0] * 255).numpy().astype(np.uint8))
+                i += 1
+                garbage_mask = np.zeros(shape=background[0].shape, dtype=np.uint8)
+                garbage_mask[100:-100, 100:-100] = np.ones(
+                    shape=(background.shape[1] - 200, background.shape[2] - 200),
+                    dtype=np.uint8
                 )
+                detections = sift.detect((background[0].numpy() * 255).astype(np.uint8), garbage_mask)
+                garbage_indices = torch.randperm(len(detections))[:self.cfg.BLOBINATOR.BLOBS_PER_IMAGE]
+                garbage_keypoints = torch.stack(list(map(self.convert_cv_keypoint, detections)))[garbage_indices]
+
+                keypoint_indices = torch.randperm(len(self.keypoints))[:self.cfg.BLOBINATOR.BLOBS_PER_IMAGE]
+                for keypoint, garbage_keypoint in zip(self.keypoints[keypoint_indices], chain(garbage_keypoints, repeat(None))):
+                    # TODO: Augmentation
+                    anchor_patch_transform = self.ellipse_to_affine((keypoint[:2], (keypoint[2], keypoint[2]), 0))
+
+                    anchor_patch = self.get_patch(self.blobs, anchor_patch_transform)
+                    # TODO: Augmentation
+                    try:
+                        positive_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(
+                            homography,
+                            keypoint
+                        )))
+                    except AssertionError:
+                        continue    # Encountered invalid ellipse
+                    positive_patch = self.get_patch(warped_image, positive_patch_transform)
+
+                    garbage_available = False
+                    garbage_patch = np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
+                    if garbage_keypoint is not None:
+                        try:
+                            garbage_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(
+                                self.keypoint_to_mapped_conic(homography, garbage_keypoint)
+                            ))
+                            garbage_patch = self.get_patch(background, garbage_patch_transform)
+                            garbage_available = True
+                        except AssertionError:
+                            pass    # Encountered invalid ellipse
+
+                    yield (
+                        anchor_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
+                        positive_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
+                        garbage_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
+                        garbage_available
+                    )
 
 
 class BlobinatorTestDataset(torch.utils.data.Dataset, BlobinatorDataset):
@@ -503,19 +548,27 @@ class BlobinatorTestDataset(torch.utils.data.Dataset, BlobinatorDataset):
 
 def main():
     import sys
+    import time
     sys.path.insert(0, os.getcwd())
     from configs.defaults import _C as cfg
 
     directory = "./data/patches"
+    start = time.time()
 
     dataset = BlobinatorTrainDataset(cfg)
 
-    for i, (anchor_patch, positive_patch, garbage_patch, garbage_available) in zip(range(3), dataset):
-        os.makedirs(os.path.join(directory, f"{i:02}"), exist_ok=True)
-        cv.imwrite(os.path.join(directory, f"{i:02}", "anchor.png"), (anchor_patch[0] * 255).numpy().astype(np.uint8))
-        cv.imwrite(os.path.join(directory, f"{i:02}", "positive.png"), (positive_patch[0] * 255).numpy().astype(np.uint8))
+    os.makedirs(os.path.join(directory, "anchor"), exist_ok=True)
+    os.makedirs(os.path.join(directory, "positive"), exist_ok=True)
+    os.makedirs(os.path.join(directory, "garbage"), exist_ok=True)
+
+    for i, (anchor_patch, positive_patch, garbage_patch, garbage_available) in enumerate(dataset):
+        cv.imwrite(os.path.join(directory, "anchor", f"{i:04}.png"), (anchor_patch[0] * 255).numpy().astype(np.uint8))
+        cv.imwrite(os.path.join(directory, "positive", f"{i:04}.png"), (positive_patch[0] * 255).numpy().astype(np.uint8))
         if garbage_available:
-            cv.imwrite(os.path.join(directory, f"{i:02}", "garbage.png"), (garbage_patch[0] * 255).numpy().astype(np.uint8))
+            cv.imwrite(os.path.join(directory, "garbage", f"{i:04}.png"), (garbage_patch[0] * 255).numpy().astype(np.uint8))
+
+    end = time.time()
+    print(f"Generated {i*3} patches in {end - start:.1f} s")  # pyright: ignore[reportPossiblyUnboundVariable]
 
 
 if __name__ == "__main__":

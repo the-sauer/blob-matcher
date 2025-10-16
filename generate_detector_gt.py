@@ -10,21 +10,7 @@ sys.path.insert(0, os.getcwd())
 
 from configs.defaults import _C as cfg
 from modules.ptn.pytorch.blobinator_dataset import BlobinatorDataset
-
-def fchain(*args):
-    def function(x):
-        for f in reversed(args):
-            x = f(x)
-        return x
-    return function
-
-
-def curry(f):
-    def function(x):
-        def inner(y):
-            return f(x,y)
-        return inner
-    return function
+from modules.hardnet.utils import curry, fchain
 
 
 class BlobinatorDetectorDataset(BlobinatorDataset):
