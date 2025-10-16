@@ -16,6 +16,7 @@ import numpy as np
 import pdf2image
 import skimage
 import torch
+from torchvision.transforms import v2
 
 
 Ellipse: TypeAlias = tuple[np.typing.NDArray, tuple[float, float], float]
@@ -442,16 +443,22 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
         """
         sift = cv.SIFT_create()
         warped_images = self.map_blobs(self.backgrounds, self.homographies)
+        transforms = v2.Compose([
+            v2.ColorJitter(),
+            v2.GaussianBlur(kernel_size=(3, 3)),
+            v2.GaussianNoise()
+        ])
+        warped_images = transforms(warped_images)
         for homography, background, warped_image in zip(self.homographies, self.backgrounds, warped_images):
             # warped_image = self.map_blobs(background, homography)
-            # cv.imwrite("warped_image.png", np.clip(warped_image * 255, min=0, max=255).astype(np.uint8))
+            # cv.imwrite("warped_image.png", np.clip(warped_image[0].numpy() * 255, min=0, max=255).astype(np.uint8))
             garbage_mask = np.zeros(shape=background[0].shape, dtype=np.uint8)
             garbage_mask[100:-100, 100:-100] = np.ones(
                 shape=(background.shape[1] - 200, background.shape[2] - 200),
                 dtype=np.uint8
             )
-            detections = sift.detect((background[0][0].numpy() * 255).astype(np.uint8), garbage_mask)
-            garbage_keypoints = map(self.convert_cv_keypoint, np.random.permutation(detections))
+            detections = sift.detect((background[0].numpy() * 255).astype(np.uint8), garbage_mask)
+            garbage_keypoints = map(self.convert_cv_keypoint, detections)
             for keypoint, garbage_keypoint in zip(self.keypoints, chain(garbage_keypoints, repeat(None))):
                 # TODO: Augmentation
                 anchor_patch_transform = self.ellipse_to_affine((keypoint[0], (keypoint[1], keypoint[1]), 0))
