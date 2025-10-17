@@ -434,6 +434,7 @@ class BlobinatorDataset(ABC):
         device = img.device
         P = self.cfg.INPUT.IMAGE_SIZE
         PSF = self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR
+        B, _, Hs, Ws = img.shape
 
         # Create normalized grid for output patch
         y, x = torch.meshgrid(
@@ -454,17 +455,18 @@ class BlobinatorDataset(ABC):
 
         # Stack homogeneous coords
         ones = torch.ones_like(xs)
-        coords = torch.stack([xs, ys, ones], dim=-1)  # (P, P, 3)
+        coords = torch.stack([xs, ys, ones], dim=-1)
+        coords = coords.view(1, P, P, 3)
+        coords = coords.expand(B, -1, -1, -1)  # (B, P, P, 3)
 
         # Apply affine transform A
-        coords = coords @ A.T
+        coords = torch.matmul(coords, A.transpose(1, 2))
         x_src, y_src = coords[..., 0], coords[..., 1]
 
         # Normalize coordinates to [-1, 1] for grid_sample
-        Hs, Ws = img.shape[2:]
         x_norm = 2 * (x_src / (Ws - 1)) - 1
         y_norm = 2 * (y_src / (Hs - 1)) - 1
-        grid = torch.stack([x_norm, y_norm], dim=-1).unsqueeze(0)  # (1, P, P, 2)
+        grid = torch.stack([x_norm, y_norm], dim=-1)  # (B, P, P, 2)
 
         # Sample the image
         warped = torch.nn.functional.grid_sample(
@@ -476,7 +478,7 @@ class BlobinatorDataset(ABC):
 
         # Blend with constant background
         mask = torch.nn.functional.grid_sample(
-            torch.ones((1, 1, Hs, Ws), device=device),
+            torch.ones((B, 1, Hs, Ws), device=device),
             grid,
             mode='nearest',
             padding_mode='zeros',
@@ -536,11 +538,11 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                 garbage_keypoints = torch.stack(list(map(self.convert_cv_keypoint, detections)))[garbage_indices]
 
                 keypoint_indices = torch.randperm(len(self.keypoints))[:self.cfg.BLOBINATOR.BLOBS_PER_IMAGE]
-                for keypoint, garbage_keypoint in zip(self.keypoints[keypoint_indices], chain(garbage_keypoints, repeat(None))):
+                anchor_patch_transforms = torch.stack(list(map(lambda keypoint: self.ellipse_to_affine((keypoint[:2], (keypoint[2], keypoint[2]), 0)), self.keypoints[keypoint_indices])))
+                anchor_patches = self.get_patch(self.blobs.unsqueeze(0).expand(anchor_patch_transforms.size(0), -1, -1, -1), anchor_patch_transforms)
+                for keypoint, garbage_keypoint, anchor_patch in zip(self.keypoints[keypoint_indices], chain(garbage_keypoints, repeat(None)), anchor_patches):
                     # TODO: Augmentation
-                    anchor_patch_transform = self.ellipse_to_affine((keypoint[:2], (keypoint[2], keypoint[2]), 0))
 
-                    anchor_patch = self.get_patch(self.blobs.unsqueeze(0), anchor_patch_transform)
                     # TODO: Augmentation
                     try:
                         positive_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(
@@ -549,7 +551,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                         )))
                     except AssertionError:
                         continue    # Encountered invalid ellipse
-                    positive_patch = self.get_patch(warped_image.unsqueeze(0), positive_patch_transform)
+                    positive_patch = self.get_patch(warped_image.unsqueeze(0), positive_patch_transform.unsqueeze(0))
 
                     garbage_available = False
                     garbage_patch = np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
@@ -558,7 +560,7 @@ class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset
                             garbage_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(
                                 self.keypoint_to_mapped_conic(homography, garbage_keypoint)
                             ))
-                            garbage_patch = self.get_patch(background.unsqueeze(0), garbage_patch_transform)
+                            garbage_patch = self.get_patch(background.unsqueeze(0), garbage_patch_transform.unsqueeze(0))
                             garbage_available = True
                         except AssertionError:
                             pass    # Encountered invalid ellipse
