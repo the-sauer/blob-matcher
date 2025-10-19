@@ -24,7 +24,7 @@ class BlobinatorDetectorDataset(BlobinatorDataset):
                     self.conic_to_ellipse,
                     curry(self.keypoint_to_mapped_conic)(homography)
                 ),
-                self.keypoints
+                self.training_keypoints
             ))
             yield warped_image, meta_data
 

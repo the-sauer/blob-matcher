@@ -35,7 +35,7 @@ from modules.ptn.pytorch.data import transformerData, \
     transformerValTestData, \
     TripletPhotoTour, \
     Augmentor
-from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorTestDataset
+from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
 from modules.hardnet.loggers import Logger, FileLogger
 from modules.hardnet.losses import loss_HardNet_weighted
 from modules.hardnet.models import HardNet
@@ -104,7 +104,7 @@ def create_test_loaders(padTo):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorTestDataset(cfg)
+    transformer_dataset = BlobinatorBlobToBlobValidationDataset(cfg)
     val_loaders = [{
         'name':
         'multiple_sequences_validation',
@@ -457,6 +457,9 @@ def main(cfg, model, device, logger, file_logger):
     train_loader = create_train_loader(cfg, train_sequences)
     # create testing data sets
     val_loaders, test_loaders = create_test_loaders(cfg.TRAINING.PAD_TO)
+
+    val_loaders[0]["dataloader"].dataset.validation_keypoints = train_loader.dataset.validation_keypoints
+    val_loaders[0]["dataloader"].dataset.validation_background_filenames = train_loader.dataset.validation_background_filenames
 
     best_fpr_val = 100  # initial value of best FPR
 
