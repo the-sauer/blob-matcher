@@ -137,7 +137,7 @@ def loss_HardNet_weighted(anchor,
     assert anchor.dim() == 2, "Inputd must be a 2D matrix."
     eps = 1e-8
     dist_matrix = distance_matrix_vector(anchor, positive) + eps
-    eye = torch.autograd.Variable(torch.eye(dist_matrix.size(1))).cuda()
+    eye = torch.autograd.Variable(torch.eye(dist_matrix.size(1)))#.cuda()
 
     # steps to filter out same patches that occur in distance matrix as negatives
     pos1 = torch.diag(dist_matrix)
@@ -145,31 +145,33 @@ def loss_HardNet_weighted(anchor,
     mask = (dist_without_min_on_diag.ge(0.008).float() - 1.0) * (-1)
     mask = mask.type_as(dist_without_min_on_diag) * 10
     dist_without_min_on_diag = dist_without_min_on_diag + mask
-    
-    garbage_dist_matrix = torch.concat((
-        distance_matrix_vector(anchor, garbage),
-        distance_matrix_vector(positive, garbage)
-    ))
+    if garbage is not None:
+        garbage_dist_matrix = torch.concat((
+            distance_matrix_vector(anchor, garbage),
+            distance_matrix_vector(positive, garbage)
+        ))
     if batch_reduce == 'min':
         min_neg_idx = torch.min(dist_without_min_on_diag, 1)[1]
 
         min_neg = torch.min(dist_without_min_on_diag, 1)[0]
-        min_neg_garbage = torch.min(garbage_dist_matrix, 1)[0]
+        if garbage is not None:
+            min_neg_garbage = torch.min(garbage_dist_matrix, 1)[0]
+            assert min_neg_garbage.size(0) == 2 * min_neg.size(0)
         if anchor_swap:
             min_neg2 = torch.min(dist_without_min_on_diag, 0)[0]
-            assert min_neg_garbage.size(0) == 2 * min_neg.size(0)
             min_neg = torch.min(
                 min_neg,
                 min_neg2
             )
-            min_neg = torch.min(
-                min_neg,
-                min_neg_garbage[:min_neg.size(0)]
-            )
-            min_neg = torch.min(
-                min_neg,
-                min_neg_garbage[min_neg.size(0):]
-            )
+            if garbage is not None:
+                min_neg = torch.min(
+                    min_neg,
+                    min_neg_garbage[:min_neg.size(0)]
+                )
+                min_neg = torch.min(
+                    min_neg,
+                    min_neg_garbage[min_neg.size(0):]
+                )
 
         min_neg = min_neg
         pos = pos1
@@ -183,7 +185,7 @@ def loss_HardNet_weighted(anchor,
         min_neg = min_neg.squeeze(0)
     elif batch_reduce == 'random':
         idxs = torch.autograd.Variable(
-            torch.randperm(anchor.size()[0]).long()).cuda()
+            torch.randperm(anchor.size()[0]).long())#.cuda()
         min_neg = dist_without_min_on_diag.gather(1, idxs.view(-1, 1))
         if anchor_swap:
             min_neg2 = torch.t(dist_without_min_on_diag).gather(
@@ -288,9 +290,9 @@ def global_orthogonal_regularization(anchor, negative):
 
 # For testing and debugging
 if __name__ == "__main__":
-    anchor = torch.rand(10, 128).cuda()
-    positive = torch.rand(10, 128).cuda() 
-    garbage = torch.rand(6, 128).cuda()
+    anchor = torch.rand(10, 128)#.cuda()
+    positive = torch.rand(10, 128)#.cuda() 
+    garbage = torch.rand(0, 128)#.cuda()
 
     loss, _ = loss_HardNet_weighted(anchor, positive, garbage, anchor_swap=True)
     print(loss)

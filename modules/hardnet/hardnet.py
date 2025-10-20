@@ -87,7 +87,8 @@ def create_train_loader(cfg, sequences):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorTrainDataset(cfg)
+    transformer_dataset = BlobinatorTrainDataset(cfg, "./data/training")
+    transformer_dataset.preprocess()
     train_loader = torch.utils.data.DataLoader(
         transformer_dataset,
         batch_size=cfg.TRAINING.BATCH_SIZE,
@@ -104,7 +105,7 @@ def create_test_loaders(padTo):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorBlobToBlobValidationDataset(cfg)
+    transformer_dataset = BlobinatorBlobToBlobValidationDataset(cfg, "./data/validation")
     val_loaders = [{
         'name':
         'multiple_sequences_validation',
@@ -154,7 +155,10 @@ def train(cfg,
         # resolution x resolution] output array
         out_p, p_p = model(img_p)
 
-        out_g, _ = model(img_g)
+        if img_g.size(0) > 0:
+            out_g, _ = model(img_g)
+        else:
+            out_g = None
 
         loss, min_neg_idx = loss_HardNet_weighted(
             out_a,

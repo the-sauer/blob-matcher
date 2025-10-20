@@ -11,7 +11,7 @@ import math
 import os
 import random
 import sys
-from typing import Any, Generator, NotRequired, TypeAlias, TypedDict
+from typing import Any, Generator, NotRequired, Optional, TypeAlias, TypedDict
 
 
 import cv2 as cv
@@ -20,6 +20,7 @@ import kornia
 import numpy as np
 import pdf2image
 import torch
+import torchvision
 from torchvision.transforms import v2
 
 
@@ -45,7 +46,7 @@ class BoardBundle(TypedDict):
     blobs: list[IsoBlob]
 
 
-class BlobinatorDataset(ABC):
+class BlobinatorDataset:
     """
     This is an abstract base class for Blobinator datasets.
 
@@ -53,8 +54,9 @@ class BlobinatorDataset(ABC):
     homographies.
     """
 
-    def __init__(self, cfg) -> None:
+    def __init__(self, cfg, temp_path) -> None:
         self.cfg = cfg
+        self.temp_path = temp_path
 
         # res = blob_pattern(
         #     cfg.BLOBINATOR.PATTERN_HEIGHT,
@@ -76,13 +78,13 @@ class BlobinatorDataset(ABC):
                 with open(full_path) as f:
                     blob_metadata = json.loads(f.read())
             elif file.endswith(".png"):
-                read_blobs = torch.tensor(cv.imread(full_path, cv.IMREAD_GRAYSCALE) / 255, dtype=torch.float32)
+                read_blobs = torchvision.io.decode_image(full_path, torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
                 if read_blobs is not None:
                     self.blobs[0] = read_blobs
                 else:
                     logging.error("Could not read blob board")
             elif file.endswith(".pdf"):
-                self.blobs[0] = torch.tensor(pdf2image.convert_from_path(full_path, grayscale=True)[0] / 255, dtype=torch.float32)
+                self.blobs[0] = torch.tensor(pdf2image.convert_from_path(full_path, grayscale=True)[0], dtype=torch.float32) / 255
             else:
                 logging.warning(f"Unrecognised file '{file}'")
 
@@ -102,27 +104,22 @@ class BlobinatorDataset(ABC):
         )(os.walk(path))
         random.shuffle(background_filenames)
         self.training_background_filenames = background_filenames[int(len(background_filenames) * self.cfg.BLOBINATOR.VALIDATION.BACKGROUND_SPLIT):]
+        self.training_background_filenames = self.training_background_filenames[:self.cfg.BLOBINATOR.TRAINING_DATASET_SIZE // self.cfg.BLOBINATOR.BLOBS_PER_IMAGE]
         self.validation_background_filenames = background_filenames[:int(len(background_filenames) * self.cfg.BLOBINATOR.VALIDATION.BACKGROUND_SPLIT)]
 
         self.background_index = 0
 
     def load_background(self, img_path):
-        img = cv.imread(img_path, cv.IMREAD_GRAYSCALE)
-        if img is None:
-            logging.error(f"Failed to load image '{img_path}'")
-            return
-        if img.shape[0] > img.shape[1]:
-            crop1 = (img.shape[0] - img.shape[1]) // 2
-            crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[0] else crop1 + 1
-            img = img[crop1:-crop2, :]
-        elif img.shape[1] > img.shape[0]:
-            crop1 = (img.shape[1] - img.shape[0]) // 2
-            crop2 = crop1 if 2 * crop1 + img.shape[0] == img.shape[1] else crop1 + 1
-            img = img[:, crop1:-crop2]
-        return torch.as_tensor(
-            cv.resize(img, dsize=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)) / 255,
-            dtype=torch.float32
-        ).unsqueeze(0)
+        img = torchvision.io.decode_image(img_path, torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+        if img.shape[1] > img.shape[2]:
+            crop1 = (img.shape[1] - img.shape[2]) // 2
+            crop2 = crop1 if 2 * crop1 + img.shape[2] == img.shape[1] else crop1 + 1
+            img = img[:, crop1:-crop2, :]
+        elif img.shape[2] > img.shape[1]:
+            crop1 = (img.shape[2] - img.shape[1]) // 2
+            crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[2] else crop1 + 1
+            img = img[:, :, crop1:-crop2]
+        return torchvision.transforms.Resize((self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO))(img)
 
     def sample_homography(
         self,
@@ -315,6 +312,7 @@ class BlobinatorDataset(ABC):
             An array of shape (3,3) representing the conic section of the mapped keypoint.
         """
         #location = k[:2]
+        assert k.shape == (4,)
         scale = k[2]
 
         x = k[0]
@@ -325,7 +323,7 @@ class BlobinatorDataset(ABC):
         mapped_conic = (mapped_conic + torch.transpose(mapped_conic, 0, 1)) / 2
         return mapped_conic
 
-    def conic_to_ellipse(self, conic) -> tuple[np.typing.NDArray, tuple[float, float], float]:
+    def conic_to_ellipse(self, conic) -> Optional[tuple[np.typing.NDArray, tuple[float, float], float]]:
         """
         Extracts ellipse parameters from a conic section.
 
@@ -352,7 +350,8 @@ class BlobinatorDataset(ABC):
         y_0 = location[1].item()
 
         F_c = A * x_0 * x_0 + B * x_0 * y_0 + C * y_0 * y_0 + D * x_0 + E * y_0 + F
-        assert F_c < 0
+        if F_c >= 0:
+            return None
 
         semi_axis_factor1 = 2 * (A * E ** 2 + C * D ** 2 - B * D * E + (B ** 2 - 4 * A * C) * F)
         semi_minor_axis_factor2 = (A + C) - np.sqrt((A - C) ** 2 + B ** 2)
@@ -468,90 +467,72 @@ class BlobinatorDataset(ABC):
         return output
 
 
-class BlobinatorTrainDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
+class BlobinatorTrainDataset(BlobinatorDataset):
     def convert_cv_keypoint(self, keypoint: cv.KeyPoint) -> torch.Tensor:
         return torch.tensor([*keypoint.pt, keypoint.size, keypoint.angle * np.pi / 180])
+    
+    def preprocess(self):
+        os.makedirs(os.path.join(self.temp_path, "warped_image"), exist_ok=True)
+        resizing = torchvision.transforms.Resize((self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO))
+        transforms = v2.Compose([
+            v2.ColorJitter(),
+            v2.GaussianBlur(kernel_size=(5, 5)),
+            v2.GaussianNoise()
+        ])
+        self.homographies = [
+            self.sample_homography(original_shape=self.blobs.shape[1:], patch_shape=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO))
+            for _ in range(len(self.training_background_filenames))
+        ]
+        for i, (img_path, homography) in enumerate(zip(self.training_background_filenames, self.homographies)):
+            print(img_path)
+            img = torchvision.io.decode_image(img_path, torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+            if img.shape[1] > img.shape[2]:
+                crop1 = (img.shape[1] - img.shape[2]) // 2
+                crop2 = crop1 if 2 * crop1 + img.shape[2] == img.shape[1] else crop1 + 1
+                img = img[:, crop1:-crop2, :]
+            elif img.shape[2] > img.shape[1]:
+                crop1 = (img.shape[2] - img.shape[1]) // 2
+                crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[2] else crop1 + 1
+                img = img[:, :, crop1:-crop2]
+            img = resizing(img)
+            img = self.map_blobs(img.unsqueeze(0), homography.unsqueeze(0))
+            img = transforms(img)
+            torchvision.utils.save_image(img, os.path.join(self.temp_path, "warped_image", f"{i:04}.png"))
 
-    def __iter__(self) -> Generator[
-        tuple[
-            torch.Tensor,
-            torch.Tensor,
-            torch.Tensor,
-            bool
-        ],
-        None,
-        None
-    ]:
-        """
-        Yields:
-            A tuple consisting of
-                - the anchor patch,
-                - a positive patch (i.e.) the corresponding patch to the anchor patch in the warped image,
-                - an optional garbage patch, which describes a random detection in the background, and
-                - a boolean flag whether there is a garbage patch available.
-        """
         anchor_patch_transforms = torch.stack(list(map(lambda keypoint: self.ellipse_to_affine((keypoint[:2], (keypoint[2], keypoint[2]), 0)), self.training_keypoints)))
-        anchor_patches = self.get_patch(self.blobs.unsqueeze(0).expand(anchor_patch_transforms.size(0), -1, -1, -1), anchor_patch_transforms)
-        os.makedirs(f"./data/warped_image", exist_ok=True)
-        sift = cv.SIFT_create()
-        i = 0
-        random.shuffle(self.training_background_filenames)
-        for background_filename in self.training_background_filenames[:self.cfg.BLOBINATOR.TRAINING_DATASET_SIZE // self.cfg.BLOBINATOR.BLOBS_PER_IMAGE]:
-            background = self.load_background(background_filename).unsqueeze(0)
-            homography = self.sample_homography(
-                original_shape=self.blobs.shape[1:],
-                patch_shape=(self.cfg.TRAINING.PAD_TO, self.cfg.TRAINING.PAD_TO)
-            ).unsqueeze(0)
-            warped_image = self.map_blobs(background, homography)
-            transforms = v2.Compose([
-                v2.ColorJitter(),
-                v2.GaussianBlur(kernel_size=(3, 3)),
-                v2.GaussianNoise()
-            ])
-            warped_image = transforms(warped_image)
-            
-            cv.imwrite(f"./data/warped_image/{i:04}.png", (warped_image[0, 0] * 255).numpy().astype(np.uint8))
-            i += 1
-            garbage_mask = np.zeros(shape=background[0, 0].shape, dtype=np.uint8)
-            garbage_mask[100:-100, 100:-100] = np.ones(
-                shape=(background.shape[2] - 200, background.shape[3] - 200),
-                dtype=np.uint8
-            )
-            detections = sift.detect((background[0, 0].numpy() * 255).astype(np.uint8), garbage_mask)
-            garbage_indices = torch.randperm(len(detections))[:self.cfg.BLOBINATOR.BLOBS_PER_IMAGE]
-            garbage_keypoints = torch.stack(list(map(self.convert_cv_keypoint, detections)))[garbage_indices]
+        self.anchor_patches = self.get_patch(self.blobs.unsqueeze(0).expand(anchor_patch_transforms.size(0), -1, -1, -1), anchor_patch_transforms)
 
-            keypoint_indices = torch.randperm(len(self.training_keypoints))[:self.cfg.BLOBINATOR.BLOBS_PER_IMAGE]
-            
-            for keypoint, garbage_keypoint, anchor_idx in zip(self.training_keypoints[keypoint_indices], chain(garbage_keypoints, repeat(None)), keypoint_indices):
-                anchor_patch = anchor_patches[anchor_idx]
-                try:
-                    positive_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(self.keypoint_to_mapped_conic(
-                        homography.squeeze(),
-                        keypoint
-                    )))
-                except AssertionError:
-                    continue    # Encountered invalid ellipse
-                positive_patch = self.get_patch(warped_image, positive_patch_transform.unsqueeze(0))
+        self.keypoint_map = {}
+        for i, homography in enumerate(self.homographies):
+            warped_keypoints = []
+            for j in range(self.training_keypoints.size(0)):
+                warped_keypoints.append(self.conic_to_ellipse(self.keypoint_to_mapped_conic(homography, self.training_keypoints[j])))
+            indices = torch.where(torch.tensor(list(map(lambda x: x is not None, warped_keypoints))))[0]
+            transforms = torch.stack(list(map(self.ellipse_to_affine, filter(lambda x: x is not None, warped_keypoints))))
+            assert indices.size(0) == transforms.size(0)
+            self.keypoint_map[i] = (indices, transforms)
+        self.length = sum(map(lambda x: len(x[0]), self.keypoint_map.values()))
 
-                garbage_available = False
-                garbage_patch = np.zeros(shape=(self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE))
-                if garbage_keypoint is not None:
-                    try:
-                        garbage_patch_transform = self.ellipse_to_affine(self.conic_to_ellipse(
-                            self.keypoint_to_mapped_conic(homography.squeeze(), garbage_keypoint)
-                        ))
-                        garbage_patch = self.get_patch(background, garbage_patch_transform.unsqueeze(0))
-                        garbage_available = True
-                    except AssertionError:
-                        pass    # Encountered invalid ellipse
+    def get_image_and_patch_index(self, idx):
+        image_idx = 0
+        while idx >= len(self.keypoint_map[image_idx][0]):
+            idx -= len(self.keypoint_map[image_idx][0])
+            image_idx += 1
+        patch_idx = self.keypoint_map[image_idx][0][idx]
+        return image_idx, patch_idx
 
-                yield (
-                    anchor_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
-                    positive_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
-                    garbage_patch.reshape(1, self.cfg.INPUT.IMAGE_SIZE, self.cfg.INPUT.IMAGE_SIZE),
-                    garbage_available
-                )
+    def __getitem__(self, idx):
+        image_idx, patch_idx = self.get_image_and_patch_index(idx)
+        base_image = torchvision.io.decode_image(
+            os.path.join(self.temp_path, "warped_image", f"{image_idx:04}.png"),
+            torchvision.io.ImageReadMode.GRAY
+        )
+        positive_transform = self.keypoint_map[image_idx][1][int(torch.where(self.keypoint_map[image_idx][0] == patch_idx)[0])]
+        positive_patch = self.get_patch(base_image.to(torch.float).unsqueeze(0) / 255, positive_transform.unsqueeze(0))
+        return (self.anchor_patches[patch_idx], positive_patch.squeeze(0), torch.zeros((1, 32, 32)), False)
+
+    def __len__(self):
+        return self.length
 
 
 class BlobinatorBlobToBlobValidationDataset(torch.utils.data.IterableDataset, BlobinatorDataset):
@@ -598,6 +579,7 @@ class BlobinatorBlobToBlobValidationDataset(torch.utils.data.IterableDataset, Bl
 
     def __len__(self):
         return 1
+    
 
 
 def main():
@@ -609,17 +591,19 @@ def main():
     directory = "./data/patches"
     start = time.time()
 
-    dataset = BlobinatorTrainDataset(cfg)
+    dataset = BlobinatorTrainDataset(cfg, "data/training")
+    dataset.preprocess()
 
     os.makedirs(os.path.join(directory, "anchor"), exist_ok=True)
     os.makedirs(os.path.join(directory, "positive"), exist_ok=True)
     os.makedirs(os.path.join(directory, "garbage"), exist_ok=True)
 
-    for i, (anchor_patch, positive_patch, garbage_patch, garbage_available) in enumerate(dataset):
-        cv.imwrite(os.path.join(directory, "anchor", f"{i:04}.png"), (anchor_patch[0] * 255).numpy().astype(np.uint8))
-        cv.imwrite(os.path.join(directory, "positive", f"{i:04}.png"), (positive_patch[0] * 255).numpy().astype(np.uint8))
+    for i in range(len(dataset)):
+        (anchor_patch, positive_patch, garbage_patch, garbage_available) = dataset[i]
+        torchvision.utils.save_image(anchor_patch, os.path.join(directory, "anchor", f"{i:04}.png"))
+        torchvision.utils.save_image(positive_patch, os.path.join(directory, "positive", f"{i:04}.png"))
         if garbage_available:
-            cv.imwrite(os.path.join(directory, "garbage", f"{i:04}.png"), (garbage_patch[0] * 255).numpy().astype(np.uint8))
+            torchvision.utils.save_image(garbage_patch, os.path.join(directory, "garbage", f"{i:04}.png"))
 
     end = time.time()
     print(f"Generated {i*3} patches in {end - start:.1f} s")  # pyright: ignore[reportPossiblyUnboundVariable]
