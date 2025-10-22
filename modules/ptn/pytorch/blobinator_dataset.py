@@ -95,10 +95,11 @@ class BlobinatorDataset:
         random.shuffle(keypoints)
         self.training_keypoints = torch.stack(keypoints[int(len(keypoints) * self.cfg.BLOBINATOR.VALIDATION.KEYPOINT_SPLIT):])
         self.validation_keypoints = torch.stack(keypoints[:int(len(keypoints) * self.cfg.BLOBINATOR.VALIDATION.KEYPOINT_SPLIT)])
-        path = os.path.join(kagglehub.dataset_download(self.cfg.BLOBINATOR.BACKGROUND_DATASET), "indoorCVPR_09/images")
+        #path = os.path.join(kagglehub.dataset_download(self.cfg.BLOBINATOR.BACKGROUND_DATASET), "indoorCVPR_09/images")
+        path = "./data/backgrounds/openloris-location"
         background_filenames = fchain(
             list,
-            curry(filter)(curry(flip(str.endswith))(".jpg")),
+            curry(filter)(curry(flip(str.endswith))(".png")),
             curry(reduce)(list.__add__),
             curry(map)(lambda x: list(map(lambda f: os.path.join(x[0], f), x[2])))
         )(os.walk(path))
