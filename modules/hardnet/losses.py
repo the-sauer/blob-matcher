@@ -137,7 +137,7 @@ def loss_HardNet_weighted(anchor,
     assert anchor.dim() == 2, "Inputd must be a 2D matrix."
     eps = 1e-8
     dist_matrix = distance_matrix_vector(anchor, positive) + eps
-    eye = torch.autograd.Variable(torch.eye(dist_matrix.size(1)))#.cuda()
+    eye = torch.autograd.Variable(torch.eye(dist_matrix.size(1))).to(anchor.device)
 
     # steps to filter out same patches that occur in distance matrix as negatives
     pos1 = torch.diag(dist_matrix)
@@ -185,7 +185,7 @@ def loss_HardNet_weighted(anchor,
         min_neg = min_neg.squeeze(0)
     elif batch_reduce == 'random':
         idxs = torch.autograd.Variable(
-            torch.randperm(anchor.size()[0]).long())#.cuda()
+            torch.randperm(anchor.size()[0]).long()).device(anchor.device)
         min_neg = dist_without_min_on_diag.gather(1, idxs.view(-1, 1))
         if anchor_swap:
             min_neg2 = torch.t(dist_without_min_on_diag).gather(

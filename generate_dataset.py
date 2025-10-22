@@ -2,10 +2,13 @@ import argparse
 from functools import reduce
 import json
 import logging
+import math
 import os
 import random
 import sys
+from typing import Optional
 
+import cv2 as cv
 import kornia
 import numpy as np
 import torch
@@ -196,10 +199,181 @@ def map_blobs(background: torch.Tensor, homography: torch.Tensor, blobs: torch.T
     return warped_blobs
 
 
+def keypoint_to_mapped_conic(homography: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    """
+    Transforms a keypoint into a conic section and warps it via a homography.
+
+    When ignoring orientation a keypoint can be repersented by a circle. If the circle is represented as a conic
+    section, it can be transformed with a homography. We expect to obtain an elliptical conic section as a result,
+    since the perspective change of the used homographies are not that large.
+
+    Arguments:
+        homography: The homography with which the keypoint will be mapped.
+        k: The keypoint.
+
+    Returns:
+        An array of shape (3,3) representing the conic section of the mapped keypoint.
+    """
+    #location = k[:2]
+    assert k.shape == (4,)
+    scale = k[2]
+
+    x = k[0]
+    y = k[1]
+    conic = torch.tensor([[1, 0, -x], [0, 1, -y], [-x, -y, x**2 + y**2 - scale**2]], dtype=torch.float32)
+    inverse_homography = torch.linalg.inv(homography)
+    mapped_conic = torch.transpose(inverse_homography, 0, 1) @ conic @ inverse_homography
+    mapped_conic = (mapped_conic + torch.transpose(mapped_conic, 0, 1)) / 2
+    return mapped_conic
+
+def conic_to_ellipse(conic) -> Optional[tuple[np.typing.NDArray, tuple[float, float], float]]:
+    """
+    Extracts ellipse parameters from a conic section.
+
+    Arguments:
+        conic: A (3,3) array with the conic section.
+
+    Returns:
+        A tuple consisting of
+            - a 2 entry array with the location,
+            - a tuple containing the semi-major axis and the semi-minor axis, and
+            - the angle of the semi-major axis in radians.
+
+    Raises:
+        AssertionError: When the conic does not represent a valid ellipse.
+    """
+    location = -torch.linalg.inv(conic[:2, :2] * 2) @ (conic[:2, 2] * 2)
+    A = conic[0, 0].item()
+    B = conic[0, 1].item() * 2
+    C = conic[1, 1].item()
+    D = conic[0, 2].item() * 2
+    E = conic[1, 2].item() * 2
+    F = conic[2, 2].item()
+    x_0 = location[0].item()
+    y_0 = location[1].item()
+
+    F_c = A * x_0 * x_0 + B * x_0 * y_0 + C * y_0 * y_0 + D * x_0 + E * y_0 + F
+    if F_c >= 0:
+        return None
+
+    semi_axis_factor1 = 2 * (A * E ** 2 + C * D ** 2 - B * D * E + (B ** 2 - 4 * A * C) * F)
+    semi_minor_axis_factor2 = (A + C) - np.sqrt((A - C) ** 2 + B ** 2)
+    semi_major_axis_factor2 = (A + C) + np.sqrt((A - C) ** 2 + B ** 2)
+    semi_axis_quotient = B ** 2 - 4 * A * C
+    semi_minor_axis = -np.sqrt(semi_axis_factor1 * semi_minor_axis_factor2) / semi_axis_quotient
+    semi_major_axis = -np.sqrt(semi_axis_factor1 * semi_major_axis_factor2) / semi_axis_quotient
+    angle = np.atan2(-B, C - A) / 2
+
+    return location, (semi_major_axis, semi_minor_axis), angle
+
+def ellipse_to_affine(ellipse) -> torch.Tensor:
+    """
+    Finds an affine transformation that transforms the unit circle into the ellipse.
+
+    Arguments:
+        ellipse: The ellipse in which the unit circle should be transformed.
+
+    Returns:
+        An (3,3) array representing the affine transformation.
+    """
+    location, (semi_major_axis, semi_minor_axis), angle = ellipse
+    scale = np.diag([semi_major_axis, semi_minor_axis, 1])
+    rotation = np.identity(3)
+    rotation[:2, :] = cv.getRotationMatrix2D((0, 0), int(-angle * 180 / np.pi), 1)
+    translation = np.identity(3)
+    translation[:2, 2] = location
+    return torch.tensor(translation @ rotation @ scale, dtype=torch.float32)
+
+def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, pad_with=1.0):
+    """
+    Extract a log-polar interpolated patch from an affine patch.
+
+    The method used to extract the patch is now described in more detail. Given patch coordinates $(x,y)$ with
+    $0 \\leq x, y < P$ for a given patch size $P$ we first normalize them into the half-open interval $[0,1)$:
+    $\\overline{x} = \\frac{x}{P}, \\overline{x} = \\frac{x}{P}$. We set $x$ to be the radial dimension and $y$ to
+    be the angular dimension of the patch. We can obtain the log-polar coordinates by:
+    $$r = e^{\\ln(PSF) \\cdot \\overline{x}}$$
+    and
+    $$\\theta = 2 \\cdot \\pi \\cdot \\overline{x}$$
+    where $PSF$ is the *Patch-Scale-Factor*, a configuration value that controls the size of the patch in relation
+    to the radius of the blob. Note that $r \\in [1, PSF)$ and $\\theta \\in [0, 2\\pi)$.
+
+    Arguments:
+        img: The source image.
+        A: An affine transform that maps the unit circle into the keypoints.
+        pad_with: A color value to use for padding if part of the patch lie outside the source image.
+
+    Returns:
+        A 2-dim `numpy` Array containing the image data of the patch.
+        """
+    device = img.device
+    P = cfg.INPUT.IMAGE_SIZE
+    PSF = cfg.BLOBINATOR.PATCH_SCALE_FACTOR
+    B, _, Hs, Ws = img.shape
+
+    # Create normalized grid for output patch
+    y, x = torch.meshgrid(
+        torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+        torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+        indexing='ij'
+    )
+    # Each (x,y) is a location in patch coords, shape (P, P)
+    # We treat x as radial and y as angular dimension
+
+    # Compute log-polar coordinates
+    r = torch.exp(torch.log(torch.tensor(PSF, device=device)) * x)  # [1, PSF)
+    theta = 2 * math.pi * y                                         # [0, 2π)
+
+    # Convert to Cartesian coordinates in source patch
+    xs = r * torch.cos(theta)
+    ys = r * torch.sin(theta)
+
+    # Stack homogeneous coords
+    ones = torch.ones_like(xs)
+    coords = torch.stack([xs, ys, ones], dim=-1)
+    coords = coords.view(1, P, P, 3)
+    coords = coords.expand(B, -1, -1, -1)  # (B, P, P, 3)
+
+    # Flatten spatial grid for batch multiplication
+    coords_flat = coords.view(B, -1, 3)                     # (B, P*P, 3)
+    # Apply affine transform A to each batch item
+    coords_flat = torch.bmm(coords_flat, A.transpose(1, 2)) # (B, P*P, 3)
+    # Reshape back
+    coords = coords_flat.view(B, P, P, 3)
+
+    x_src, y_src = coords[..., 0], coords[..., 1]
+
+    # Normalize coordinates to [-1, 1] for grid_sample
+    x_norm = 2 * (x_src / (Ws - 1)) - 1
+    y_norm = 2 * (y_src / (Hs - 1)) - 1
+    grid = torch.stack([x_norm, y_norm], dim=-1)  # (B, P, P, 2)
+
+    # Sample the image
+    warped = torch.nn.functional.grid_sample(
+        img, grid,
+        mode='bilinear',
+        padding_mode='zeros',  # outside = 0
+        align_corners=True
+    )
+
+    # Blend with constant background
+    mask = torch.nn.functional.grid_sample(
+        torch.ones((B, 1, Hs, Ws), device=device),
+        grid,
+        mode='nearest',
+        padding_mode='zeros',
+        align_corners=True
+    )
+
+    background = torch.full_like(warped, pad_with)
+    output = warped * mask + background * (1 - mask)
+    return output
+
+
 def create_manifest(cfg, path, background_files, keypoint_indices, blobboards):
     def keypoint_to_torch(keypoint):
         return torch.tensor(
-            [keypoint["center"][0]["value"], keypoint["center"][0]["value"], keypoint["σ"]["value"], 0],
+            [keypoint["center"][0]["value"], keypoint["center"][1]["value"], keypoint["σ"]["value"], 0],
             dtype=torch.float32
         )
 
@@ -226,7 +400,7 @@ def create_manifest(cfg, path, background_files, keypoint_indices, blobboards):
     ))), os.path.join(path, "keypoints.pt"))
 
 
-def generate_dataset(cfg, path):
+def generate_dataset(cfg, path, is_validation=False):
     resize = torchvision.transforms.Resize((cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
     with open(os.path.join(path, "blobboards.txt"), "r", encoding="UTF-8") as blobs_file:
         blobboard_paths = list(map(str.strip, blobs_file.readlines()))
@@ -236,6 +410,7 @@ def generate_dataset(cfg, path):
         blobboards[i] = torchvision.io.decode_image(blobboard_path, torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
     with open(os.path.join(path, "backgrounds.txt"), "r", encoding="UTF-8") as backgrounds_file:
         backgrounds_paths, blobboards_indices = list(zip(*map(str.split, backgrounds_file.readlines())))
+        blobboards_indices = list(map(int, blobboards_indices))
     homographies = torch.load(os.path.join(path, "homographies.pt"))
 
     #warped_images = torch.empty(len(backgrounds_paths), 1, cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)
@@ -246,7 +421,7 @@ def generate_dataset(cfg, path):
         v2.GaussianNoise()
     ])
     for i, (background_path, blobboard_idx, homography) in enumerate(zip(backgrounds_paths, blobboards_indices, homographies)):
-        if os.path.exists(os.path.join(path, "warped_images", f"{i:04}.png")) or i == 344:
+        if os.path.exists(os.path.join(path, "warped_images", f"{i:04}.png")):
             continue
         img = torchvision.io.decode_image(background_path, torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
         assert img.size(0) == 1
@@ -260,9 +435,40 @@ def generate_dataset(cfg, path):
             img = resize(img[:, :, crop1:-crop2])
         else:
             img = resize(img)
-        warped_image = map_blobs(img.unsqueeze(0), homographies[i].unsqueeze(0), blobboards[0], cfg)
+        warped_image = map_blobs(img.unsqueeze(0), homography.unsqueeze(0), blobboards[blobboard_idx], cfg)
         warped_image = transforms(warped_image)
         torchvision.utils.save_image(warped_image, os.path.join(path, "warped_images", f"{i:04}.png"))
+
+    keypoints = torch.load(os.path.join(path, "keypoints.pt"))
+
+    os.makedirs(os.path.join(path, "patches", "anchors"), exist_ok=True)
+    anchor_patches = torch.empty((*keypoints.shape[:2], 1, cfg.INPUT.IMAGE_SIZE, cfg.INPUT.IMAGE_SIZE))
+    for board_idx, blobboard in enumerate(blobboards):
+        anchor_patch_transforms = torch.stack(list(map(lambda keypoint: ellipse_to_affine((keypoint[:2], (keypoint[2], keypoint[2]), 0)), keypoints[board_idx])))
+        anchor_patches[board_idx] = get_patch(blobboard.unsqueeze(0).expand(anchor_patch_transforms.size(0), -1, -1, -1), anchor_patch_transforms, cfg)
+        for blob_idx, patch in enumerate(anchor_patches[board_idx]):
+            torchvision.utils.save_image(patch, os.path.join(path, "patches", "anchors", f"{board_idx:04}_{blob_idx:04}.png"))
+
+    os.makedirs(os.path.join(path, "patches", "positives"), exist_ok=True)
+    for background_idx, homography in enumerate(homographies):
+        background = torchvision.io.decode_image(os.path.join(path, "warped_images", f"{background_idx:04}.png")).to(torch.float32) / 255
+        mapped_keypoints = list(map(conic_to_ellipse, map(curry(keypoint_to_mapped_conic)(homography), keypoints[blobboards_indices[background_idx]])))
+        positive_indices = torch.where(torch.tensor(list(map(lambda x: x is not None, mapped_keypoints))))[0]
+        positive_transforms = torch.stack(list(map(ellipse_to_affine, filter(lambda x: x is not None, mapped_keypoints))))
+        positive_patches = get_patch(background.unsqueeze(0).expand(positive_transforms.size(0), -1, -1, -1), positive_transforms, cfg)
+        if is_validation:
+            os.makedirs(os.path.join(path, "patches", "false_anchors"), exist_ok=True)
+            false_anchor_map = torch.empty((2, keypoints[blobboards_indices[background_idx]].size(0)))
+            false_anchor_map[0] = torch.randperm(keypoints[blobboards_indices[background_idx]].size(0))
+            false_anchor_map[1, 1:] = false_anchor_map[0, :-1]
+            false_anchor_map[1, 0] = false_anchor_map[0, -1]
+        for blob_idx, patch in enumerate(positive_patches):
+            torchvision.utils.save_image(patch, os.path.join(path, "patches", "positives", f"{background_idx:04}_{blobboards_indices[background_idx]:04}_{int(positive_indices[blob_idx]):04}.png"))
+            if is_validation:
+                false_anchor_idx = int(false_anchor_map[1, int(torch.where(false_anchor_map[0] == int(positive_indices[blob_idx]))[0])])
+                assert false_anchor_idx != int(positive_indices[blob_idx])
+                torchvision.utils.save_image(anchor_patches[board_idx, false_anchor_idx], os.path.join(path, "patches", "false_anchors", f"{background_idx:04}_{blobboards_indices[background_idx]:04}_{int(positive_indices[blob_idx]):04}.png"))
+
 
 
 def main():
@@ -322,7 +528,10 @@ def main():
         validation_background_filenames = training_background_filenames[:cfg.BLOBINATOR.VALIDATION_DATASET_SIZE // cfg.BLOBINATOR.BLOBS_PER_IMAGE]
 
         blobboards = [
-            (os.path.join(os.getcwd(), "out/blob_pattern_1DA.png"), os.path.join(os.getcwd(), "out/blob_pattern_1DA.json"))
+            (
+                os.path.join(os.getcwd(), "data/patterns/blob_pattern_1DA.png"),
+                os.path.join(os.getcwd(), "data/patterns/blob_pattern_1DA.json")
+            )
         ]
 
         keypoint_indices = torch.randperm(min(
@@ -343,8 +552,8 @@ def main():
             keypoint_indices[int(keypoint_indices.size(0) * 0.8):],
             blobboards
         )
-    generate_dataset(cfg, os.path.join(args.path, "training"))
-    generate_dataset(cfg, os.path.join(args.path, "validation"))
+    # generate_dataset(cfg, os.path.join(args.path, "training"))
+    generate_dataset(cfg, os.path.join(args.path, "validation"), is_validation=True)
 
 
 if __name__ == "__main__":

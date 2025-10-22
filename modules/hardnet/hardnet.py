@@ -34,8 +34,10 @@ from configs.defaults import _C as cfg
 from modules.ptn.pytorch.data import transformerData, \
     transformerValTestData, \
     TripletPhotoTour, \
-    Augmentor
-from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
+    Augmentor, \
+    BlobinatorTrainingData, \
+    BlobinatorValidationData
+# from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
 from modules.hardnet.loggers import Logger, FileLogger
 from modules.hardnet.losses import loss_HardNet_weighted
 from modules.hardnet.models import HardNet
@@ -87,12 +89,12 @@ def create_train_loader(cfg, sequences):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorTrainDataset(cfg, "./data/training")
-    transformer_dataset.preprocess()
+    transformer_dataset = BlobinatorTrainingData(cfg, "./data/training")
+    # transformer_dataset.preprocess()
     train_loader = torch.utils.data.DataLoader(
         transformer_dataset,
         batch_size=cfg.TRAINING.BATCH_SIZE,
-        shuffle=False,
+        shuffle=True,
         **kwargs)
 
     return train_loader
@@ -105,14 +107,14 @@ def create_test_loaders(padTo):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorBlobToBlobValidationDataset(cfg, "./data/validation")
+    transformer_dataset = BlobinatorValidationData(cfg, "./data/validation")
     val_loaders = [{
         'name':
         'multiple_sequences_validation',
         'dataloader':
         torch.utils.data.DataLoader(transformer_dataset,
                                     batch_size=cfg.TEST.TEST_BATCH_SIZE,
-                                    shuffle=False,
+                                    shuffle=True,
                                     **kwargs)
     }]
 
@@ -190,7 +192,7 @@ def train(cfg,
 
             pbar.set_description(
                 'Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                    epoch, batch_idx * len(theta_a[0]),
+                    epoch, batch_idx * img_a.size(0),
                     len(train_loader.dataset),
                     100. * batch_idx / len(train_loader), loss.item()))
 
@@ -298,47 +300,51 @@ def test(cfg, test_loader, model, augm, epoch, logger, logger_test_name):
         # data for our data set: img,img,meta,meta,ID,ID,match
         # data for Brown data  : img,img,match
 
-        patchwise = len(data) < 7
-        imgIDs_a = None if patchwise else data[4]
-        img_a = data[0].to(device) if not imgIDs_a else dict(
-            zip(imgIDs_a, data[0]["img"]))  # create dictionary of images
-        theta_a = None if patchwise else [
-            theta.float().to(device) for theta in data[2]#[0:-1]
-        ]
+        # patchwise = len(data) < 7
+        # imgIDs_a = None if patchwise else data[4]
+        # img_a = data[0].to(device) if not imgIDs_a else dict(
+        #     zip(imgIDs_a, data[0]["img"]))  # create dictionary of images
+        # theta_a = None if patchwise else [
+        #     theta.float().to(device) for theta in data[2]#[0:-1]
+        # ]
 
-        imgIDs_p = None if patchwise else data[5]
-        img_p = data[1].to(device) if not imgIDs_p else dict(
-            zip(imgIDs_p, data[1]["img"]))  # create dictionary of images
-        theta_p = None if patchwise else [
-            theta.float().to(device) for theta in data[3]#[0:-1]
-        ]
+        # imgIDs_p = None if patchwise else data[5]
+        # img_p = data[1].to(device) if not imgIDs_p else dict(
+        #     zip(imgIDs_p, data[1]["img"]))  # create dictionary of images
+        # theta_p = None if patchwise else [
+        #     theta.float().to(device) for theta in data[3]#[0:-1]
+        # ]
 
-        # get scale correction factor, orientation correction constant and check whether the second keypoint
-        # falls on the anchor's image (in which case not to apply correction)
-        # or on the paired image (requiring correction)
-        # for test data, negative keypoints may be on the anchor's image or on
-        # the paired image
-        diffImg = None if patchwise else data[8]
-        scaleCorrect = None if patchwise else 1 - diffImg + diffImg * \
-            data[9]  # set to correction factor if on different images, 0 else
-        # set to correction factor if on different images, 0 else
-        orientCorrect = None if patchwise else diffImg * data[10]
+        # # get scale correction factor, orientation correction constant and check whether the second keypoint
+        # # falls on the anchor's image (in which case not to apply correction)
+        # # or on the paired image (requiring correction)
+        # # for test data, negative keypoints may be on the anchor's image or on
+        # # the paired image
+        # diffImg = None if patchwise else data[8]
+        # scaleCorrect = None if patchwise else 1 - diffImg + diffImg * \
+        #     data[9]  # set to correction factor if on different images, 0 else
+        # # set to correction factor if on different images, 0 else
+        # orientCorrect = None if patchwise else diffImg * data[10]
+
+        img_a, img_p, label = data
+        img_a = img_a.to(device)
+        img_p = img_p.to(device)
 
         # forward-propagate input through network and get [batchSize x 1 x
         # resolution x resolution] output array
-        out_a, _ = model(img_a, theta_a, imgIDs_a)
+        out_a, _ = model(img_a)
 
         # forward-propagate input through network and get [batchSize x 1 x
         # resolution x resolution] output array
-        out_p, _ = model(img_p, theta_p, imgIDs_p)
+        out_p, _ = model(img_p)
 
-        label = data[-1].float().to(device)
+        label = label.to(device)
 
-        if cfg.TEST.ENABLE_ORIENTATION_FILTERING and theta_a:
-            # Filter for all the orienations less than specified value
-            out_a, out_p, label = filter_orientation(
-                out_a, out_p, label, theta_a, theta_p, orientCorrect,
-                cfg.TRAINING.ORIENTATION_FILTER_VALUE)
+        # if cfg.TEST.ENABLE_ORIENTATION_FILTERING and theta_a:
+        #     # Filter for all the orienations less than specified value
+        #     out_a, out_p, label = filter_orientation(
+        #         out_a, out_p, label, theta_a, theta_p, orientCorrect,
+        #         cfg.TRAINING.ORIENTATION_FILTER_VALUE)
 
         num_tests += len(out_a)
 
@@ -462,18 +468,18 @@ def main(cfg, model, device, logger, file_logger):
     # create testing data sets
     val_loaders, test_loaders = create_test_loaders(cfg.TRAINING.PAD_TO)
 
-    val_loaders[0]["dataloader"].dataset.validation_keypoints = train_loader.dataset.validation_keypoints
-    val_loaders[0]["dataloader"].dataset.validation_background_filenames = train_loader.dataset.validation_background_filenames
+    # val_loaders[0]["dataloader"].dataset.validation_keypoints = train_loader.dataset.validation_keypoints
+    # val_loaders[0]["dataloader"].dataset.validation_background_filenames = train_loader.dataset.validation_background_filenames
 
     best_fpr_val = 100  # initial value of best FPR
 
     # train the network for a given epoch interval
     for epoch in range(start, end):
 
-        if epoch > start:
+        # if epoch > start:
 
             # get new training pairs at the start of each epoch
-            train_loader.dataset.get_pairs(train_sequences)
+            # train_loader.dataset.get_pairs(train_sequences)
 
         torch.cuda.empty_cache()
         # train the network on the current epoch's data
