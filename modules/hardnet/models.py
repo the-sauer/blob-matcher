@@ -87,9 +87,9 @@ class HardNet(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.1),
             # Maybe put Maxpooling here like:
-            # nn.MaxPool2d(kernel_size=(8,1)),
-            nn.Conv2d(128, 128, kernel_size=8, bias=False),                     # 1x1
-            # nn.Conv2d(128, 128, kernel_size=(1,8), bias=False),
+            nn.MaxPool2d(kernel_size=(8,1)),
+            #nn.Conv2d(128, 128, kernel_size=8, bias=False),                     # 1x1
+            nn.Conv2d(128, 128, kernel_size=(1,8), bias=False),
             nn.BatchNorm2d(128, affine=False),
         )
 
