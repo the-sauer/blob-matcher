@@ -12,3 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+def flip(f):
+    def flipped_f(y, x):
+        return f(x, y)
+    return flipped_f
+
+
+def fchain(*args):
+    def function(x):
+        for f in reversed(args):
+            x = f(x)
+        return x
+    return function
+
+
+def curry(f):
+    def function(x):
+        def inner(y):
+            return f(x,y)
+        return inner
+    return function

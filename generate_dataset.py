@@ -8,14 +8,21 @@ import random
 import sys
 from typing import Optional
 
-import cv2 as cv
+
 import kornia
 import numpy as np
 import torch
 import torchvision
 from torchvision.transforms import v2
 
-from modules.hardnet.utils import curry, fchain, flip
+from modules import curry, fchain, flip
+path_to_blobboards =  os.path.join(os.getcwd(), "../BlobBoards.jl/python")
+sys.path.insert(0, path_to_blobboards)
+from BlobBoards.core import ureg, BlobGenerator
+
+
+def physical_to_logical_distance(x, dpi):
+    return (x * ureg.millimeter).to(ureg.inch) * dpi
 
 
 def read_json(path):
@@ -277,12 +284,16 @@ def ellipse_to_affine(ellipse) -> torch.Tensor:
         An (3,3) array representing the affine transformation.
     """
     location, (semi_major_axis, semi_minor_axis), angle = ellipse
-    scale = np.diag([semi_major_axis, semi_minor_axis, 1])
-    rotation = np.identity(3)
-    rotation[:2, :] = cv.getRotationMatrix2D((0, 0), int(-angle * 180 / np.pi), 1)
-    translation = np.identity(3)
+    scale = torch.diag(torch.tensor([semi_major_axis, semi_minor_axis, 1], dtype=torch.float32))
+    rotation = torch.eye(3)
+    angle = torch.tensor(angle)
+    rotation[:2, :2] = torch.tensor(
+        [[torch.cos(angle), torch.sin(angle)], [-torch.sin(angle), torch.cos(angle)]],
+        dtype=torch.float32
+    )
+    translation = torch.eye(3)
     translation[:2, 2] = location
-    return torch.tensor(translation @ rotation @ scale, dtype=torch.float32)
+    return translation @ rotation @ scale
 
 def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, pad_with=1.0):
     """
@@ -370,18 +381,51 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, pad_with=1.0):
     return output
 
 
-def create_manifest(cfg, path, background_files, keypoint_indices, blobboards):
+def create_manifest(cfg, path, background_files):
     def keypoint_to_torch(keypoint):
         return torch.tensor(
             [keypoint["center"][0]["value"], keypoint["center"][1]["value"], keypoint["σ"]["value"], 0],
             dtype=torch.float32
         )
 
-    def keypoints_to_torch(keypoints):
-        return torch.stack(list(map(keypoint_to_torch, keypoints)))
+    def keypoints_to_torch(keypoints, max_num_keypoints):
+        keypoints = torch.empty((max_num_keypoints, 4))
+        keypoints[:len(keypoints)] = torch.stack(list(map(keypoint_to_torch, keypoints)))
+        return keypoints
 
-    j = read_json(blobboards[0][1])["pattern_config"]["pattern_resolution"]
-    blobboard_shape = (j["height"]["value"], j["height"]["value"])
+    gen = BlobGenerator()
+    board_paths = []
+    board_info_paths = []
+    max_num_blobs = 0
+    num_keypoints = torch.empty(homographies.size(0), dtype=int)
+    seeds = torch.randperm(10*homographies.size(0))[:homographies.size(0)]
+    for i, seed in enumerate(seeds):
+        res = gen.blob_board(
+            paper_size="A4",
+            dpi=600,
+            board_size=(150*ureg.mm, 150*ureg.mm),
+            sigma_cutoff=2.0,
+            alpha=1.6,
+            max_diameter_fraction=0.9,
+            min_scale=0.2*ureg.mm,
+            border_width=10.0*ureg.mm,
+            ruler_width=5*ureg.mm,
+            major_tick_spacing=10.0*ureg.mm,
+            minor_tick_spacing=1.0*ureg.mm,
+            output_dir=os.path.join(path, "patterns"),
+            seed=seed,
+            format="png"
+        )
+        max_num_blobs = max(max_num_blobs, res["num_blobs"])
+        num_keypoints[i] = res["num_blobs"]
+        blobboard_shape = physical_to_logical_distance(res["height_mm"]), physical_to_logical_distance(res["width_mm"])
+        board_paths.append(list(filter(lambda f: f.endswith(".png"))))
+        board_info_paths.append(list(filter(lambda f: f.endswith(".json"))))
+
+    with open(os.path.join(path, "blobboards.txt")) as blob_file:
+        blob_file.writelines(map(lambda l: l[0] + l[1] + "\n", zip(board_paths, board_info_paths)))
+    # j = read_json(blobboards[0][1])["pattern_config"]["pattern_resolution"]
+    # blobboard_shape = (j["height"]["value"], j["height"]["value"])
     homographies = torch.stack([
         sample_homography(blobboard_shape, (cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
         for _ in range(len(background_files))
@@ -389,31 +433,36 @@ def create_manifest(cfg, path, background_files, keypoint_indices, blobboards):
     torch.save(homographies, os.path.join(path, "homographies.pt"))
     with open(os.path.join(path, "backgrounds.txt"), "x", encoding="UTF-8") as background_list_file:
         background_list_file.writelines(map(
-            lambda line: line[1] + f" {line[0] % len(blobboards):04}\n",
+            lambda line: line[1] + "\n",
             enumerate(background_files)
         ))
-    with open(os.path.join(path, "blobboards.txt"), "x", encoding="UTF-8") as blobs_file:
-        blobs_file.writelines(map(lambda b: b[0] + "\n", blobboards))
+    # with open(os.path.join(path, "blobboards.txt"), "x", encoding="UTF-8") as blobs_file:
+    #     blobs_file.writelines(map(lambda b: b[0] + "\n", blobboards))
+    
     torch.save(torch.stack(list(map(
-        lambda k: keypoints_to_torch(k)[keypoint_indices],
-        map(lambda b: read_json(b[1])["blobs"], blobboards)
+        lambda k: keypoints_to_torch(k, max_num_blobs)[torch.randperm(len(k))],
+        map(lambda b: read_json(b)["blobs"], board_info_paths)
     ))), os.path.join(path, "keypoints.pt"))
-
+    torch.save(num_keypoints, os.path.join(path, "num_keypoints.pt"))
 
 def generate_dataset(cfg, path, is_validation=False):
     resize = torchvision.transforms.Resize((cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
-    with open(os.path.join(path, "blobboards.txt"), "r", encoding="UTF-8") as blobs_file:
-        blobboard_paths = list(map(str.strip, blobs_file.readlines()))
+    # with open(os.path.join(path, "blobboards.txt"), "r", encoding="UTF-8") as blobs_file:
+    #     blobboard_paths = list(map(str.strip, blobs_file.readlines()))
     os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
-    blobboards = torch.empty((len(blobboard_paths), 1, 600, 800), dtype=torch.float32)
-    for i, blobboard_path in enumerate(blobboard_paths):
-        blobboards[i] = torchvision.io.decode_image(blobboard_path, torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+    # for i, blobboard_path in enumerate(blobboard_paths):
+    #     blobboards[i] = torchvision.io.decode_image(blobboard_path, torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
     with open(os.path.join(path, "backgrounds.txt"), "r", encoding="UTF-8") as backgrounds_file:
-        backgrounds_paths, blobboards_indices = list(zip(*map(str.split, backgrounds_file.readlines())))
-        blobboards_indices = list(map(int, blobboards_indices))
+        backgrounds_paths = list(map(str.split, backgrounds_file.readlines()))
+        # blobboards_indices = list(map(int, blobboards_indices))
     homographies = torch.load(os.path.join(path, "homographies.pt"))
 
-    #warped_images = torch.empty(len(backgrounds_paths), 1, cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)
+    with open(os.path.join(path, "blobboards.txt")) as blob_file:
+        blobboard_paths, blobboard_info_paths = list(zip(*map(str.split, blob_file.readlines)))
+    
+    j = read_json(blobboard_info_paths[0])
+    # blobboard_shape = j[]
+    blobboards = torch.empty((len(backgrounds_paths), 1, 600, 800), dtype=torch.float32)
 
     transforms = v2.Compose([
         v2.ColorJitter(),
@@ -527,33 +576,29 @@ def main():
         validation_background_filenames = background_filenames[:int(len(background_filenames) * cfg.BLOBINATOR.VALIDATION.BACKGROUND_SPLIT)]
         validation_background_filenames = training_background_filenames[:cfg.BLOBINATOR.VALIDATION_DATASET_SIZE // cfg.BLOBINATOR.BLOBS_PER_IMAGE]
 
-        blobboards = [
-            (
-                os.path.join(os.getcwd(), "data/patterns/blob_pattern_1DA.png"),
-                os.path.join(os.getcwd(), "data/patterns/blob_pattern_1DA.json")
-            )
-        ]
+        # blobboards = [
+        #     (
+        #         os.path.join(os.getcwd(), "data/patterns/blob_pattern_1DA.png"),
+        #         os.path.join(os.getcwd(), "data/patterns/blob_pattern_1DA.json")
+        #     )
+        # ]
 
-        keypoint_indices = torch.randperm(min(
-            len(blobs) for blobs in map(lambda x: read_json(x[1])["blobs"], blobboards)
-        ))
+        # keypoint_indices = torch.randperm(min(
+        #     len(blobs) for blobs in map(lambda x: read_json(x[1])["blobs"], blobboards)
+        # ))
 
         create_manifest(
             cfg,
             os.path.join(args.path, "training"),
             training_background_filenames,
-            keypoint_indices[:int(keypoint_indices.size(0) * 0.8)],
-            blobboards
         )
         create_manifest(
             cfg,
             os.path.join(args.path, "validation"),
             validation_background_filenames,
-            keypoint_indices[int(keypoint_indices.size(0) * 0.8):],
-            blobboards
         )
     # generate_dataset(cfg, os.path.join(args.path, "training"))
-    generate_dataset(cfg, os.path.join(args.path, "validation"), is_validation=True)
+    # generate_dataset(cfg, os.path.join(args.path, "validation"), is_validation=True)
 
 
 if __name__ == "__main__":
