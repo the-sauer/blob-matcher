@@ -516,10 +516,10 @@ def generate_dataset(cfg, path, is_validation=False):
             blobboard_info["preamble"]["board_config"]["print_density"]["value"],
             blobboard_info["preamble"]["board_config"]["border_width"]["value"],
             (
-                blobboard_info["preamble"]["board_config"]["canvas_size"]["width"]["value"]
-                    - blobboard_info["preamble"]["board_config"]["board_size"]["width"]["value"],
-                blobboard_info["preamble"]["board_config"]["canvas_size"]["height"]["value"]
-                    - blobboard_info["preamble"]["board_config"]["board_size"]["height"]["value"]
+                (blobboard_info["preamble"]["board_config"]["canvas_size"]["width"]["value"]
+                    - blobboard_info["preamble"]["board_config"]["board_size"]["width"]["value"]) / 2,
+                (blobboard_info["preamble"]["board_config"]["canvas_size"]["height"]["value"]
+                    - blobboard_info["preamble"]["board_config"]["board_size"]["height"]["value"]) / 2,
             )
         )
 
