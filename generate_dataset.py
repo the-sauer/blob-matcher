@@ -548,7 +548,7 @@ def generate_dataset(cfg, path, is_validation=False):
                 anchor_patch,
                 os.path.join(path, "patches", "anchors", f"{i:04}_{j:04}.png")
             )
-            positive_patch = get_patch(blobboard.unsqueeze(0), positive_transforms[j].unsqueeze(0), cfg)
+            positive_patch = get_patch(warped_image.unsqueeze(0), positive_transforms[j].unsqueeze(0), cfg)
             torchvision.utils.save_image(
                 positive_patch,
                 os.path.join(path, "patches", "positives", f"{i:04}_{j:04}.png")
