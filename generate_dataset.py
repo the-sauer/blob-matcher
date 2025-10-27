@@ -310,7 +310,7 @@ def ellipse_to_affine(ellipse) -> torch.Tensor:
     return translation @ rotation @ scale
 
 
-def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, pad_with=1.0):
+def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=None, pad_with=1.0):
     """
     Extract a log-polar interpolated patch from an affine patch.
 
@@ -334,7 +334,7 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, pad_wit
         """
     device = img.device
     P = cfg.INPUT.IMAGE_SIZE
-    PSF = cfg.BLOBINATOR.PATCH_SCALE_FACTOR
+    PSF = psf if psf is not None else cfg.BLOBINATOR.PATCH_SCALE_FACTOR
     B, _, Hs, Ws = img.shape
 
     # Create normalized grid for output patch
@@ -541,20 +541,32 @@ def generate_dataset(cfg, path, is_validation=False):
         anchor_transforms = torch.stack(list(map(ellipse_to_affine, anchor_keypoints)))
         positive_transforms = torch.stack(list(map(ellipse_to_affine, positive_keypoints)))
 
-        os.makedirs(os.path.join(path, "patches", "anchors"), exist_ok=True)
-        os.makedirs(os.path.join(path, "patches", "positives"), exist_ok=True)
-        anchor_patches = get_patch(blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1), anchor_transforms, cfg, sigma_cutoff=sigma_cutoff)
-        positive_patches = get_patch(warped_image.expand(positive_transforms.size(0), -1, -1, -1), positive_transforms, cfg, sigma_cutoff=sigma_cutoff)
-        for j in range(anchor_patches.size(0)):
-            torchvision.utils.save_image(
-                anchor_patches[j],
-                os.path.join(path, "patches", "anchors", f"{i:04}_{j:04}.png")
+        for psf in [4, 8, 16, 32, 64, 96, 128]:
+            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
+            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "positives"), exist_ok=True)
+            anchor_patches = get_patch(
+                blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1),
+                anchor_transforms,
+                cfg,
+                sigma_cutoff=sigma_cutoff,
+                psf=psf
             )
-            torchvision.utils.save_image(
-                positive_patches[j],
-                os.path.join(path, "patches", "positives", f"{i:04}_{j:04}.png")
+            positive_patches = get_patch(
+                warped_image.expand(positive_transforms.size(0), -1, -1, -1),
+                positive_transforms,
+                cfg,
+                sigma_cutoff=sigma_cutoff,
+                psf=psf
             )
-        return
+            for j in range(anchor_patches.size(0)):
+                torchvision.utils.save_image(
+                    anchor_patches[j],
+                    os.path.join(path, "patches", f"{int(psf)}", "anchors", f"{i:04}_{j:04}.png")
+                )
+                torchvision.utils.save_image(
+                    positive_patches[j],
+                    os.path.join(path, "patches", f"{int(psf)}", "positives", f"{i:04}_{j:04}.png")
+                )
 
 
 def main():
