@@ -384,7 +384,7 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, pad_with=1.0):
 
     # Blend with constant background
     mask = torch.nn.functional.grid_sample(
-        torch.ones((B, 1, Hs, Ws), device=device),
+        torch.ones((1, 1, 1, 1), device=device).expand(B, 1, Hs, Ws),
         grid,
         mode='nearest',
         padding_mode='zeros',
@@ -542,15 +542,15 @@ def generate_dataset(cfg, path, is_validation=False):
 
         os.makedirs(os.path.join(path, "patches", "anchors"), exist_ok=True)
         os.makedirs(os.path.join(path, "patches", "positives"), exist_ok=True)
-        for j in range(anchor_transforms.size(0)):
-            anchor_patch = get_patch(blobboard.unsqueeze(0), anchor_transforms[j].unsqueeze(0), cfg)
+        anchor_patches = get_patch(blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1), anchor_transforms, cfg)
+        positive_patches = get_patch(warped_image.expand(positive_transforms.size(0), -1, -1, -1), positive_transforms, cfg)
+        for j in range(anchor_patches.size(0)):
             torchvision.utils.save_image(
-                anchor_patch,
+                anchor_patches[j],
                 os.path.join(path, "patches", "anchors", f"{i:04}_{j:04}.png")
             )
-            positive_patch = get_patch(warped_image, positive_transforms[j].unsqueeze(0), cfg)
             torchvision.utils.save_image(
-                positive_patch,
+                positive_patches[j],
                 os.path.join(path, "patches", "positives", f"{i:04}_{j:04}.png")
             )
         return
@@ -612,9 +612,11 @@ def main():
             curry(map)(lambda x: list(map(lambda f: os.path.join(x[0], f), x[2]))),
         )(os.walk(os.path.join("./data/backgrounds/openloris-location")))
         random.shuffle(background_filenames)
-        training_background_filenames = background_filenames[int(len(background_filenames) * cfg.BLOBINATOR.VALIDATION.BACKGROUND_SPLIT):]
+        # Fairly distribute the available backgrounds between training and validation datasets
+        validation_split = cfg.BLOBINATOR.VALIDATION_NUM_BACKGROUNDS / cfg.BLOBINATOR.TRAINING_NUM_BACKGROUNDS
+        training_background_filenames = background_filenames[int(len(background_filenames) * validation_split):]
         training_background_filenames = training_background_filenames[:cfg.BLOBINATOR.TRAINING_NUM_BACKGROUNDS]
-        validation_background_filenames = background_filenames[:int(len(background_filenames) * cfg.BLOBINATOR.VALIDATION.BACKGROUND_SPLIT)]
+        validation_background_filenames = background_filenames[:int(len(background_filenames) * validation_split)]
         validation_background_filenames = validation_background_filenames[:cfg.BLOBINATOR.VALIDATION_NUM_BACKGROUNDS]
 
         create_manifest(
