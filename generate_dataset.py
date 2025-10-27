@@ -552,6 +552,26 @@ def generate_dataset(cfg, path, is_validation=False):
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "positives"), exist_ok=True)
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "garbage"), exist_ok=True)
+            if is_validation:
+                os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "false_anchors"), exist_ok=True)
+                false_anchor_map = torch.empty((2, anchor_transforms.size(0)))
+                false_anchor_map[0] = torch.randperm(anchor_transforms.size(0))
+                false_anchor_map[1, 1:] = false_anchor_map[0, :-1]
+                false_anchor_map[1, 0] = false_anchor_map[0, -1]
+                false_anchor_indices = false_anchor_map[:, false_anchor_map[0].argsort()]
+                false_anchor_tranforms = anchor_transforms[false_anchor_indices[1, :].to(int)]
+                false_anchor_patches = get_patch(
+                    blobboard.unsqueeze(0).expand(false_anchor_tranforms.size(0), -1, -1, -1),
+                    false_anchor_tranforms,
+                    cfg,
+                    sigma_cutoff=sigma_cutoff,
+                    psf=psf
+                )
+                for j in range(false_anchor_patches.size(0)):
+                    torchvision.utils.save_image(
+                        false_anchor_patches[j],
+                        os.path.join(path, "patches", f"{int(psf)}", "false_anchors", f"{i:04}_{j:04}.png")
+                    )
 
             anchor_patches = get_patch(
                 blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1),
