@@ -538,12 +538,21 @@ def generate_dataset(cfg, path, is_validation=False):
                 keypoint_pairs
             )
         )))
+        garbage_locations = torch.rand((len(positive_keypoints), 2)) * cfg.TRAINING.PAD_TO
+        positive_keypoint_scales = torch.tensor(list(map(lambda k: k[1][0], positive_keypoints)))
+        garbage_scales = torch.normal(torch.mean(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)), torch.std(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)))
+        garbage_orientations = torch.rand((len(positive_keypoints),)) * 2 * np.pi
+        garbage_keypoints = list(zip(garbage_locations, zip(garbage_scales, garbage_scales), garbage_orientations))
+
         anchor_transforms = torch.stack(list(map(ellipse_to_affine, anchor_keypoints)))
         positive_transforms = torch.stack(list(map(ellipse_to_affine, positive_keypoints)))
+        garbage_transforms = torch.stack(list(map(ellipse_to_affine, garbage_keypoints)))
 
         for psf in [4, 8, 16, 32, 64, 96, 128]:
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "positives"), exist_ok=True)
+            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "garbage"), exist_ok=True)
+
             anchor_patches = get_patch(
                 blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1),
                 anchor_transforms,
@@ -558,6 +567,12 @@ def generate_dataset(cfg, path, is_validation=False):
                 sigma_cutoff=sigma_cutoff,
                 psf=psf
             )
+            garbage_patches = get_patch(
+                img.unsqueeze(0).expand(garbage_transforms.size(0), -1, -1, -1),
+                garbage_transforms,
+                cfg,
+                psf=psf
+            )
             for j in range(anchor_patches.size(0)):
                 torchvision.utils.save_image(
                     anchor_patches[j],
@@ -567,6 +582,11 @@ def generate_dataset(cfg, path, is_validation=False):
                     positive_patches[j],
                     os.path.join(path, "patches", f"{int(psf)}", "positives", f"{i:04}_{j:04}.png")
                 )
+                if j < garbage_patches.size(0):
+                    torchvision.utils.save_image(
+                        garbage_patches[j],
+                        os.path.join(path, "patches", f"{int(psf)}", "garbage", f"{i:04}_{j:04}.png")
+                    )
 
 
 def main():
