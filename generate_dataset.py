@@ -310,7 +310,7 @@ def ellipse_to_affine(ellipse) -> torch.Tensor:
     return translation @ rotation @ scale
 
 
-def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, pad_with=1.0):
+def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, pad_with=1.0):
     """
     Extract a log-polar interpolated patch from an affine patch.
 
@@ -347,7 +347,7 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, pad_with=1.0):
     # We treat x as radial and y as angular dimension
 
     # Compute log-polar coordinates
-    r = torch.exp(torch.log(torch.tensor(PSF, device=device)) * x)  # [1, PSF)
+    r = torch.exp(torch.log(torch.tensor(PSF, device=device) / sigma_cutoff) * x) * sigma_cutoff  # [sigma_cutoff, PSF)
     theta = 2 * math.pi * y                                         # [0, 2π)
 
     # Convert to Cartesian coordinates in source patch
@@ -525,6 +525,7 @@ def generate_dataset(cfg, path, is_validation=False):
                     - blobboard_info["preamble"]["board_config"]["board_size"]["height"]["value"]) / 2,
             )
         )
+        sigma_cutoff = blobboard_info["preamble"]["pattern_config"]["sigma_cutoff"]
 
         keypoint_pairs = zip(
             map(lambda k: (k[:2], (k[2], k[2]), 0), keypoints),
@@ -542,8 +543,8 @@ def generate_dataset(cfg, path, is_validation=False):
 
         os.makedirs(os.path.join(path, "patches", "anchors"), exist_ok=True)
         os.makedirs(os.path.join(path, "patches", "positives"), exist_ok=True)
-        anchor_patches = get_patch(blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1), anchor_transforms, cfg)
-        positive_patches = get_patch(warped_image.expand(positive_transforms.size(0), -1, -1, -1), positive_transforms, cfg)
+        anchor_patches = get_patch(blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1), anchor_transforms, cfg, sigma_cutoff=sigma_cutoff)
+        positive_patches = get_patch(warped_image.expand(positive_transforms.size(0), -1, -1, -1), positive_transforms, cfg, sigma_cutoff=sigma_cutoff)
         for j in range(anchor_patches.size(0)):
             torchvision.utils.save_image(
                 anchor_patches[j],
