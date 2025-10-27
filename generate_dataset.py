@@ -538,6 +538,7 @@ def generate_dataset(cfg, path, is_validation=False):
                 keypoint_pairs
             )
         )))
+        anchor_keypoints = list(map(lambda k: (k[0], k[1], (k[2] + torch.rand((1,)) * 2 * math.pi % math.pi)), anchor_keypoints))
         garbage_locations = torch.rand((len(positive_keypoints), 2)) * cfg.TRAINING.PAD_TO
         positive_keypoint_scales = torch.tensor(list(map(lambda k: k[1][0], positive_keypoints)))
         garbage_scales = torch.normal(torch.mean(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)), torch.std(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)))

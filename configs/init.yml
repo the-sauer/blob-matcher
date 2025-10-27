@@ -93,3 +93,4 @@ TEST:
   IMAGE_SIZE: 32
   IS_DESC_256: False
   ORIENT_CORRECTION: False
+  

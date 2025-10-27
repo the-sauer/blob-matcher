@@ -986,7 +986,14 @@ class BlobinatorTrainingData(Dataset):
         board_idx, blob_idx = match.group(1), match.group(2)
         positive_patch = torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives", filename), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
         anchor_patch = torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "anchors", f"{board_idx}_{blob_idx}.png"), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
-        return positive_patch, anchor_patch, torch.zeros(1, 32, 32), False
+        try:
+            garbage_patch = torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "garbage", f"{board_idx}_{blob_idx}.png"), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+            garbage_available = True
+        except FileNotFoundError:
+            garbage_patch = torch.zeros(1, 32, 32)
+            garbage_available = False
+
+        return positive_patch, anchor_patch, garbage_patch, garbage_available
 
 
 class BlobinatorValidationData(Dataset):
