@@ -548,7 +548,7 @@ def generate_dataset(cfg, path, is_validation=False):
                 anchor_patch,
                 os.path.join(path, "patches", "anchors", f"{i:04}_{j:04}.png")
             )
-            positive_patch = get_patch(warped_image.unsqueeze(0), positive_transforms[j].unsqueeze(0), cfg)
+            positive_patch = get_patch(warped_image, positive_transforms[j].unsqueeze(0), cfg)
             torchvision.utils.save_image(
                 positive_patch,
                 os.path.join(path, "patches", "positives", f"{i:04}_{j:04}.png")
@@ -615,7 +615,7 @@ def main():
         training_background_filenames = background_filenames[int(len(background_filenames) * cfg.BLOBINATOR.VALIDATION.BACKGROUND_SPLIT):]
         training_background_filenames = training_background_filenames[:cfg.BLOBINATOR.TRAINING_NUM_BACKGROUNDS]
         validation_background_filenames = background_filenames[:int(len(background_filenames) * cfg.BLOBINATOR.VALIDATION.BACKGROUND_SPLIT)]
-        validation_background_filenames = training_background_filenames[:cfg.BLOBINATOR.TRAINING_NUM_BACKGROUNDS]
+        validation_background_filenames = validation_background_filenames[:cfg.BLOBINATOR.VALIDATION_NUM_BACKGROUNDS]
 
         create_manifest(
             cfg,
