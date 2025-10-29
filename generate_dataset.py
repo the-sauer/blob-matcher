@@ -347,8 +347,8 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
     # We treat x as radial and y as angular dimension
 
     # Compute log-polar coordinates
-    r = torch.exp(torch.log(torch.tensor(PSF, device=device) / sigma_cutoff) * x) * sigma_cutoff  # [sigma_cutoff, PSF)
-    theta = 2 * math.pi * y                                         # [0, 2π)
+    r = torch.exp(torch.log(torch.tensor(PSF, device=device) / sigma_cutoff) * x) * sigma_cutoff    # [sigma_cutoff, PSF)
+    theta = 2 * math.pi * y                                                                         # [0, 2π)
 
     # Convert to Cartesian coordinates in source patch
     xs = r * torch.cos(theta)
@@ -401,32 +401,29 @@ def create_manifest(cfg, path, background_files):
     max_num_blobs = 0
     num_keypoints = torch.empty((len(background_files),))
     seeds = torch.randperm(10*len(background_files))[:len(background_files)]
-    with open(os.path.join(path, "blobboards.txt"), "x", encoding="UTF-8") as blob_file:
-        for i, seed in enumerate(seeds):
-            res = gen.blob_board(
-                paper_size="A4",
-                dpi=600,
-                board_size=(150*ureg.mm, 150*ureg.mm),
-                sigma_cutoff=2.0,
-                alpha=1.6,
-                max_diameter_fraction=0.9,
-                min_scale=0.2*ureg.mm,
-                border_width=10.0*ureg.mm,
-                ruler_width=5*ureg.mm,
-                major_tick_spacing=10.0*ureg.mm,
-                minor_tick_spacing=1.0*ureg.mm,
-                dir=os.path.join(path, "patterns"),
-                seed=seed,
-                format="png"
-            )
-            max_num_blobs = max(max_num_blobs, res["num_blobs"])
-            num_keypoints[i] = res["num_blobs"]
-            blobboard_shape = (
-                physical_to_logical_distance(res["height_mm"], 600),
-                physical_to_logical_distance(res["width_mm"], 600)
-            )
-            blob_file.write(list(filter(lambda f: f.endswith(".png"), res["files_created"]))[0] + " ")
-            blob_file.write(list(filter(lambda f: f.endswith(".json"), res["files_created"]))[0] + "\n")
+    for i, seed in enumerate(seeds):
+        res = gen.blob_board(
+            paper_size="A4",
+            dpi=600,
+            board_size=(160*ureg.mm, 160*ureg.mm),
+            sigma_cutoff=2.0,
+            alpha=1.6,
+            max_diameter_fraction=0.9,
+            min_scale=0.2*ureg.mm,
+            border_width=10.0*ureg.mm,
+            ruler_width=5*ureg.mm,
+            major_tick_spacing=10.0*ureg.mm,
+            minor_tick_spacing=1.0*ureg.mm,
+            dir=os.path.join(path, "patterns"),
+            seed=seed,
+            format="png"
+        )
+        max_num_blobs = max(max_num_blobs, res["num_blobs"])
+        num_keypoints[i] = res["num_blobs"]
+        blobboard_shape = (
+            physical_to_logical_distance(res["height_mm"], 600),
+            physical_to_logical_distance(res["width_mm"], 600)
+        )
 
     homographies = torch.stack([
         sample_homography(blobboard_shape, (cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
@@ -467,9 +464,13 @@ def generate_dataset(cfg, path, is_validation=False):
         backgrounds_paths = list(map(str.strip, backgrounds_file.readlines()))
     homographies = torch.load(os.path.join(path, "homographies.pt"))
 
-    with open(os.path.join(path, "blobboards.txt"), "r", encoding="UTF-8") as blob_file:
-        lines = blob_file.readlines()
-        blobboard_paths, blobboard_info_paths = list(zip(*map(str.split, lines)))
+    blobboard_info_paths = []
+    blobboard_paths = []
+    boards = os.listdir(os.path.join(path, "patterns"))
+    boards.sort()
+    for i in range(0, len(boards), 2):
+        blobboard_info_paths.append(boards[i])
+        blobboard_paths.append(boards[i+1])
 
     blobboard_json = read_json(os.path.join(path, "patterns", blobboard_info_paths[0]))
     blobboard_shape = blobboard_json["preamble"]["board_config"]["canvas_size"]
@@ -594,6 +595,7 @@ def generate_dataset(cfg, path, is_validation=False):
                 cfg,
                 psf=psf
             )
+            # anchor_patches[..., 16, :] = torch.zeros((anchor_patches.size(0), 1, 32))
             for j in range(anchor_patches.size(0)):
                 torchvision.utils.save_image(
                     anchor_patches[j],
@@ -652,10 +654,8 @@ def main():
     os.makedirs(os.path.join(args.path, "training"), exist_ok=True)
     os.makedirs(os.path.join(args.path, "validation"), exist_ok=True)
 
-    if not os.path.exists(os.path.join(args.path, "training", "blobboards.txt")) \
-            or not os.path.exists(os.path.join(args.path, "training", "homographies.pt")) \
+    if not os.path.exists(os.path.join(args.path, "training", "homographies.pt")) \
             or not os.path.exists(os.path.join(args.path, "training", "backgrounds.txt")) \
-            or not os.path.exists(os.path.join(args.path, "validation", "blobboards.txt")) \
             or not os.path.exists(os.path.join(args.path, "validation", "homographies.pt")) \
             or not os.path.exists(os.path.join(args.path, "validation", "backgrounds.txt")):
 
