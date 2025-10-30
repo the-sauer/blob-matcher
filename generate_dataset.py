@@ -48,9 +48,10 @@ def sample_homography(
         scaling=True,
         rotation=True,
         translation=True,
-        n_scales=5,
+        n_scales=25,
         n_angles=25,
         scaling_amplitude=0.1,
+        base_scale=0.5,
         perspective_amplitude_x=0.1,
         perspective_amplitude_y=0.1,
         patch_ratio=0.5,
@@ -107,9 +108,9 @@ def sample_homography(
         if not allow_artifacts:
             perspective_amplitude_x = min(perspective_amplitude_x, margin)
             perspective_amplitude_y = min(perspective_amplitude_y, margin)
-        perspective_displacement = np.random.normal(0.0, perspective_amplitude_y / 2, (1,))
-        h_displacement_left = np.random.normal(0.0, perspective_amplitude_x / 2, (1,))
-        h_displacement_right = np.random.normal(0.0, perspective_amplitude_x / 2, (1,))
+        perspective_displacement = _truncated_normal(0.0, perspective_amplitude_y / 2, (1,))
+        h_displacement_left = _truncated_normal(0.0, perspective_amplitude_x / 2, (1,))
+        h_displacement_right = _truncated_normal(0.0, perspective_amplitude_x / 2, (1,))
         pts2 += np.stack([
             np.concatenate([h_displacement_left, perspective_displacement], axis=0),
             np.concatenate([h_displacement_left, -perspective_displacement], axis=0),
@@ -120,7 +121,7 @@ def sample_homography(
     # Random scaling
     # sample several scales, check collision with borders, randomly pick a valid one
     if scaling:
-        scales = np.concatenate([[1.0], np.random.normal(1, scaling_amplitude / 2, (n_scales,))], 0)
+        scales = np.concatenate([[1.0], _truncated_normal(1, scaling_amplitude / 2, (n_scales,))], 0)
         center = np.mean(pts2, axis=0, keepdims=True)
         scaled = np.expand_dims(pts2 - center, axis=0) * np.expand_dims(np.expand_dims(scales, 1), 1) + center
         if allow_artifacts:
@@ -186,7 +187,7 @@ def sample_homography(
     translation2 = np.identity(3)
     translation2[0, 2] = patch_shape[0] / 2
     translation2[1, 2] = patch_shape[1] / 2
-    scale = min(patch_shape[0] / original_shape[0], patch_shape[1] / original_shape[1])
+    scale = min(patch_shape[0] / original_shape[0], patch_shape[1] / original_shape[1]) * base_scale
     return torch.tensor(homography @ translation2 @ np.diag([scale, scale, 1]) @ translation1, dtype=torch.float32)
 
 
@@ -207,12 +208,12 @@ def map_blobs(background: torch.Tensor, homography: torch.Tensor, blobs: torch.T
     warped_blobs = kornia.geometry.transform.warp_perspective(
         blobs,
         homography,
-        (cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO),
+        (background.shape[2], background.shape[3]),
     )
     mask = kornia.geometry.transform.warp_perspective(
         torch.ones_like(blobs),
         homography,
-        (cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO)
+        (background.shape[2], background.shape[3])
     )
     mask = (mask > 0.999).float()
     warped_blobs = warped_blobs * mask + background * (1 - mask)
@@ -239,7 +240,7 @@ def keypoint_to_mapped_conic(homography: torch.Tensor, k: torch.Tensor) -> torch
 
     x = k[0]
     y = k[1]
-    conic = torch.tensor([[1, 0, -x], [0, 1, -y], [-x, -y, x**2 + y**2 - scale**2]], dtype=torch.float32)
+    conic = torch.tensor([[1, 0, -x], [0, 1, -y], [-x, -y, x**2 + y**2 - scale**2]], dtype=torch.float32).to(homography.device)
     inverse_homography = torch.linalg.inv(homography)
     mapped_conic = torch.transpose(inverse_homography, 0, 1) @ conic @ inverse_homography
     mapped_conic = (mapped_conic + torch.transpose(mapped_conic, 0, 1)) / 2
@@ -421,14 +422,16 @@ def create_manifest(cfg, path, background_files):
         max_num_blobs = max(max_num_blobs, res["num_blobs"])
         num_keypoints[i] = res["num_blobs"]
         blobboard_shape = (
+            physical_to_logical_distance(res["width_mm"], 600),
             physical_to_logical_distance(res["height_mm"], 600),
-            physical_to_logical_distance(res["width_mm"], 600)
         )
 
+
     homographies = torch.stack([
-        sample_homography(blobboard_shape, (cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
+        sample_homography(blobboard_shape, (4000, 6000), scaling_amplitude=0.4, perspective_amplitude_x=0.5, perspective_amplitude_y=2)
         for _ in range(len(background_files))
     ])
+    
     torch.save(homographies, os.path.join(path, "homographies.pt"))
     with open(os.path.join(path, "backgrounds.txt"), "x", encoding="UTF-8") as background_list_file:
         background_list_file.writelines(map(
@@ -458,11 +461,13 @@ def generate_dataset(cfg, path, is_validation=False):
     def keypoints_to_torch(keypoints, resolution, border_width, canvas_offset):
         return torch.stack(list(map(keypoint_to_torch(resolution, border_width, canvas_offset), keypoints)))
 
-    resize = torchvision.transforms.Resize((cfg.TRAINING.PAD_TO, cfg.TRAINING.PAD_TO))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+    resize = torchvision.transforms.Resize((4000, 6000)).to(device)
     os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
     with open(os.path.join(path, "backgrounds.txt"), "r", encoding="UTF-8") as backgrounds_file:
         backgrounds_paths = list(map(str.strip, backgrounds_file.readlines()))
-    homographies = torch.load(os.path.join(path, "homographies.pt"))
+    homographies = torch.load(os.path.join(path, "homographies.pt")).to(device)
 
     blobboard_info_paths = []
     blobboard_paths = []
@@ -486,30 +491,31 @@ def generate_dataset(cfg, path, is_validation=False):
     )
 
     transforms = v2.Compose([
-        v2.ColorJitter(),
+        v2.ColorJitter(brightness=(0.3, 1), contrast=.8, saturation=.5),
         v2.GaussianBlur(kernel_size=(5, 5)),
         v2.GaussianNoise()
-    ])
+    ]).to(device)
     keypoints = []
     for i in range(len(backgrounds_paths)):
         if os.path.exists(os.path.join(path, "warped_images", f"{i:04}.png")):
             continue
         img = torchvision.io.decode_image(backgrounds_paths[i], torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
         assert img.size(0) == 1
-        if img.shape[1] > img.shape[2]:
-            crop1 = (img.shape[1] - img.shape[2]) // 2
-            crop2 = crop1 if 2 * crop1 + img.shape[2] == img.shape[1] else crop1 + 1
-            img = resize(img[:, crop1:-crop2, :])
-        elif img.shape[2] > img.shape[1]:
-            crop1 = (img.shape[2] - img.shape[1]) // 2
-            crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[2] else crop1 + 1
-            img = resize(img[:, :, crop1:-crop2])
-        else:
-            img = resize(img)
+        # if img.shape[1] > img.shape[2]:
+        #     crop1 = (img.shape[1] - img.shape[2]) // 2
+        #     crop2 = crop1 if 2 * crop1 + img.shape[2] == img.shape[1] else crop1 + 1
+        #     img = resize(img[:, crop1:-crop2, :])
+        # elif img.shape[2] > img.shape[1]:
+        #     crop1 = (img.shape[2] - img.shape[1]) // 2
+        #     crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[2] else crop1 + 1
+        #     img = resize(img[:, :, crop1:-crop2])
+        # else:
+        img = resize(img)
+        img = img.to(device)
         blobboard = torchvision.io.decode_image(
             os.path.join(path, "patterns", blobboard_paths[i]),
             torchvision.io.ImageReadMode.GRAY).to(torch.float32
-        ) / 255
+        ).to(device) / 255
         warped_image = map_blobs(img.unsqueeze(0), homographies[i].unsqueeze(0), blobboard.unsqueeze(0), cfg)
         warped_image = transforms(warped_image)
         torchvision.utils.save_image(warped_image, os.path.join(path, "warped_images", f"{i:04}.png"))
@@ -532,23 +538,24 @@ def generate_dataset(cfg, path, is_validation=False):
             map(lambda k: (k[:2], (k[2], k[2]), 0), keypoints),
             map(conic_to_ellipse, map(curry(keypoint_to_mapped_conic)(homographies[i]), keypoints))
         )
+        min_keypoint_size = 4
         anchor_keypoints, positive_keypoints = list(zip(*filter(
-            lambda x: x[1][0][0] >= 0 and x[1][0][0] < cfg.TRAINING.PAD_TO and x[1][0][1] >= 0 and x[1][0][1] < cfg.TRAINING.PAD_TO,
+            lambda x: x[1][0][0] >= 0 and x[1][0][0] < warped_image.shape[3] and x[1][0][1] >= 0 and x[1][0][1] < warped_image.shape[2] and (x[1][1][0] + x[1][1][1]) >= min_keypoint_size,
             filter(
                 lambda x: x[0] is not None and x[1] is not None,
                 keypoint_pairs
             )
         )))
         anchor_keypoints = list(map(lambda k: (k[0], k[1], (k[2] + torch.rand((1,)) * 2 * math.pi % math.pi)), anchor_keypoints))
-        garbage_locations = torch.rand((len(positive_keypoints), 2)) * cfg.TRAINING.PAD_TO
+        garbage_locations = torch.rand((len(positive_keypoints), 2)) * torch.tensor([[4000, 6000]]).expand(len(positive_keypoints), -1)
         positive_keypoint_scales = torch.tensor(list(map(lambda k: k[1][0], positive_keypoints)))
         garbage_scales = torch.normal(torch.mean(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)), torch.std(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)))
         garbage_orientations = torch.rand((len(positive_keypoints),)) * 2 * np.pi
         garbage_keypoints = list(zip(garbage_locations, zip(garbage_scales, garbage_scales), garbage_orientations))
 
-        anchor_transforms = torch.stack(list(map(ellipse_to_affine, anchor_keypoints)))
-        positive_transforms = torch.stack(list(map(ellipse_to_affine, positive_keypoints)))
-        garbage_transforms = torch.stack(list(map(ellipse_to_affine, garbage_keypoints)))
+        anchor_transforms = torch.stack(list(map(ellipse_to_affine, anchor_keypoints))).to(device)
+        positive_transforms = torch.stack(list(map(ellipse_to_affine, positive_keypoints))).to(device)
+        garbage_transforms = torch.stack(list(map(ellipse_to_affine, garbage_keypoints))).to(device)
 
         for psf in [4, 8, 16, 32, 64, 96, 128]:
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
@@ -646,9 +653,9 @@ def main():
         torch.backends.cudnn.deterministic = True
 
     # set random seeds
-    random.seed(cfg.TRAINING.SEED)
-    torch.manual_seed(cfg.TRAINING.SEED)
-    np.random.seed(cfg.TRAINING.SEED)
+    # random.seed(cfg.TRAINING.SEED)
+    # torch.manual_seed(cfg.TRAINING.SEED)
+    # np.random.seed(cfg.TRAINING.SEED)
 
     os.makedirs(args.path, exist_ok=True)
     os.makedirs(os.path.join(args.path, "training"), exist_ok=True)
@@ -683,8 +690,8 @@ def main():
             os.path.join(args.path, "validation"),
             validation_background_filenames,
         )
-    generate_dataset(cfg, os.path.join(args.path, "training"))
-    generate_dataset(cfg, os.path.join(args.path, "validation"), is_validation=True)
+    # generate_dataset(cfg, os.path.join(args.path, "training"))
+    # generate_dataset(cfg, os.path.join(args.path, "validation"), is_validation=True)
 
 
 if __name__ == "__main__":
