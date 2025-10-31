@@ -9,6 +9,7 @@ import sys
 from typing import Optional
 
 
+import joblib
 import kornia
 import numpy as np
 import torch
@@ -51,7 +52,7 @@ def sample_homography(
         n_scales=25,
         n_angles=25,
         scaling_amplitude=0.1,
-        base_scale=0.5,
+        base_scale=1.0,
         perspective_amplitude_x=0.1,
         perspective_amplitude_y=0.1,
         patch_ratio=0.5,
@@ -397,17 +398,15 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
     return output
 
 
-def create_manifest(cfg, path, background_files):
-    gen = BlobGenerator()
-    max_num_blobs = 0
-    num_keypoints = torch.empty((len(background_files),))
+def create_manifest(cfg, path, background_files, is_hard=False):
     seeds = torch.randperm(10*len(background_files))[:len(background_files)]
     canvas_size = (150, 150)
     pattern_size = (142, 142) # in mm
     dpi = 1200
     sigma_cutoff = torch.linspace(1.75, 2.0, 50)
-    for i, seed in enumerate(seeds):
-        res = gen.blob_board(
+    gen = BlobGenerator()
+    joblib.Parallel(n_jobs=16)(
+        gen.blob_board(
             width=canvas_size[0]*ureg.mm,
             height=canvas_size[1]*ureg.mm,
             dpi=dpi,
@@ -422,19 +421,20 @@ def create_manifest(cfg, path, background_files):
             dir=os.path.join(path, "patterns"),
             seed=seed,
             format="png"
-        )
-        max_num_blobs = max(max_num_blobs, res["num_blobs"])
-        num_keypoints[i] = res["num_blobs"]
-        blobboard_shape = (
-            physical_to_logical_distance(res["width_mm"], 600),
-            physical_to_logical_distance(res["height_mm"], 600),
-        )
+        ) for i, seed in enumerate(seeds)
+    )
 
-
-    homographies = torch.stack([
-        sample_homography(blobboard_shape, (4000, 6000), scaling_amplitude=0.4, perspective_amplitude_x=0.5, perspective_amplitude_y=2)
-        for _ in range(len(background_files))
-    ])
+    blobboard_shape = (7087, 7087)
+    if is_hard:
+        homographies = torch.stack([
+            sample_homography(blobboard_shape, (4000, 6000), scaling_amplitude=0.4, base_scale=0.5, perspective_amplitude_x=0.5, perspective_amplitude_y=2)
+            for _ in range(len(background_files))
+        ])
+    else:
+        homographies = torch.stack([
+            sample_homography(blobboard_shape, (4000, 6000))
+            for _ in range(len(background_files))
+        ])
     
     torch.save(homographies, os.path.join(path, "homographies.pt"))
     with open(os.path.join(path, "backgrounds.txt"), "x", encoding="UTF-8") as background_list_file:
@@ -444,7 +444,7 @@ def create_manifest(cfg, path, background_files):
         ))
 
 
-def generate_dataset(cfg, path, is_validation=False):
+def generate_dataset(cfg, path, is_validation=False, is_hard=False):
     def keypoint_to_torch(resolution, border_width, canvas_offset):
         def _keypoint_to_torch(keypoint):
             return torch.tensor(
@@ -493,12 +493,19 @@ def generate_dataset(cfg, path, is_validation=False):
             blobboard_json["preamble"]["board_config"]["print_density"]["value"]
         )
     )
+    if is_hard:
+        transforms = v2.Compose([
+            v2.ColorJitter(brightness=(0.3, 1), contrast=.8, saturation=.5),
+            v2.GaussianBlur(kernel_size=(5, 5)),
+            v2.GaussianNoise()
+        ]).to(device)
+    else:
+        transforms = v2.Compose([
+            v2.ColorJitter(),
+            v2.GaussianBlur(kernel_size=(5, 5)),
+            v2.GaussianNoise()
+        ])
 
-    transforms = v2.Compose([
-        v2.ColorJitter(brightness=(0.3, 1), contrast=.8, saturation=.5),
-        v2.GaussianBlur(kernel_size=(5, 5)),
-        v2.GaussianNoise()
-    ]).to(device)
     keypoints = []
     for i in range(len(backgrounds_paths)):
         if os.path.exists(os.path.join(path, "warped_images", f"{i:04}.png")):
@@ -686,16 +693,30 @@ def main():
 
         create_manifest(
             cfg,
-            os.path.join(args.path, "training"),
+            os.path.join(args.path, "hard", "training"),
+            training_background_filenames,
+            is_hard=True
+        )
+        create_manifest(
+            cfg,
+            os.path.join(args.path, "hard", "validation"),
+            validation_background_filenames,
+            is_hard=True
+        )
+        create_manifest(
+            cfg,
+            os.path.join(args.path, "easy", "training"),
             training_background_filenames,
         )
         create_manifest(
             cfg,
-            os.path.join(args.path, "validation"),
+            os.path.join(args.path, "easy", "validation"),
             validation_background_filenames,
         )
-    # generate_dataset(cfg, os.path.join(args.path, "training"))
-    # generate_dataset(cfg, os.path.join(args.path, "validation"), is_validation=True)
+    generate_dataset(cfg, os.path.join(args.path, "hard", "training"), is_hard=True)
+    generate_dataset(cfg, os.path.join(args.path, "hard", "validation"), is_validation=True, is_hard=True)
+    generate_dataset(cfg, os.path.join(args.path, "easy", "training"))
+    generate_dataset(cfg, os.path.join(args.path, "easy", "validation"), is_validation=True)
 
 
 if __name__ == "__main__":
