@@ -9,7 +9,6 @@ import sys
 from typing import Optional
 
 
-import joblib
 import kornia
 import numpy as np
 import torch
@@ -22,6 +21,48 @@ path_to_blobboards = os.path.join(os.getcwd(), "../BlobBoards.jl/python")
 sys.path.insert(0, path_to_blobboards)
 from BlobBoards.core import ureg, BlobGenerator
 dpi = 1 / ureg.inch
+
+
+# The datasets to be creted. Containing a name, a transform for the images, and parameters for the homography sampling
+DATASETS: list[tuple[str, v2.Transform, dict[str, Any]]] = [
+    (
+        "easy",
+        v2.Compose([
+            v2.ColorJitter(),
+            v2.GaussianBlur(kernel_size=(5, 5)),
+            v2.GaussianNoise()
+        ]),
+        {}
+    ),
+    (
+        "hard",
+        v2.Compose([
+            v2.ColorJitter(),
+            v2.GaussianBlur(kernel_size=(7, 7)),
+            v2.GaussianNoise()
+        ]),
+        {
+            "base_scale": 0.5,
+            "scaling_amplitude": 0.5,
+            "perspective_amplitude_x": 0.5,
+            "perspective_amplitude_y": 2
+        }
+    ),
+    (
+        "very_hard",
+        v2.Compose([
+            v2.ColorJitter(),
+            v2.GaussianBlur(kernel_size=(11, 11)),
+            v2.GaussianNoise()
+        ]),
+        {
+            "base_scale": 0.2,
+            "scaling_amplitude": 0.5,
+            "perspective_amplitude_x": 1,
+            "perspective_amplitude_y": 4
+        }
+    ),
+]
 
 
 def physical_to_logical_distance(x, resolution):
@@ -398,53 +439,7 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
     return output
 
 
-def create_manifest(cfg, path, background_files, is_hard=False):
-    seeds = torch.randperm(10*len(background_files))[:len(background_files)]
-    canvas_size = (150, 150)
-    pattern_size = (142, 142) # in mm
-    dpi = 1200
-    sigma_cutoff = torch.linspace(1.75, 2.0, 50)
-    gen = BlobGenerator()
-    joblib.Parallel(n_jobs=16)(
-        gen.blob_board(
-            width=canvas_size[0]*ureg.mm,
-            height=canvas_size[1]*ureg.mm,
-            dpi=dpi,
-            board_size=(pattern_size[0]*ureg.mm, pattern_size[1]*ureg.mm),
-            sigma_cutoff=sigma_cutoff[i % sigma_cutoff.size(0)].item(),
-            alpha=1.6,
-            max_diameter_fraction=0.9,
-            min_scale=0.2*ureg.mm,
-            border_width=6.0*ureg.mm,
-            ruler_width=3.0*ureg.mm,
-            major_tick_spacing=10.0*ureg.mm,
-            dir=os.path.join(path, "patterns"),
-            seed=seed,
-            format="png"
-        ) for i, seed in enumerate(seeds)
-    )
-
-    blobboard_shape = (7087, 7087)
-    if is_hard:
-        homographies = torch.stack([
-            sample_homography(blobboard_shape, (4000, 6000), scaling_amplitude=0.4, base_scale=0.5, perspective_amplitude_x=0.5, perspective_amplitude_y=2)
-            for _ in range(len(background_files))
-        ])
-    else:
-        homographies = torch.stack([
-            sample_homography(blobboard_shape, (4000, 6000))
-            for _ in range(len(background_files))
-        ])
-    
-    torch.save(homographies, os.path.join(path, "homographies.pt"))
-    with open(os.path.join(path, "backgrounds.txt"), "x", encoding="UTF-8") as background_list_file:
-        background_list_file.writelines(map(
-            lambda line: line[1] + "\n",
-            enumerate(background_files)
-        ))
-
-
-def generate_dataset(cfg, path, is_validation=False, is_hard=False):
+def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography_kwargs, is_validation=False):
     def keypoint_to_torch(resolution, border_width, canvas_offset):
         def _keypoint_to_torch(keypoint):
             return torch.tensor(
@@ -465,23 +460,20 @@ def generate_dataset(cfg, path, is_validation=False, is_hard=False):
     def keypoints_to_torch(keypoints, resolution, border_width, canvas_offset):
         return torch.stack(list(map(keypoint_to_torch(resolution, border_width, canvas_offset), keypoints)))
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
-    resize = torchvision.transforms.Resize((4000, 6000)).to(device)
     os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
-    with open(os.path.join(path, "backgrounds.txt"), "r", encoding="UTF-8") as backgrounds_file:
-        backgrounds_paths = list(map(str.strip, backgrounds_file.readlines()))
-    homographies = torch.load(os.path.join(path, "homographies.pt")).to(device)
+    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.mps.is_available() else "cpu"))
+    print(device)
 
-    blobboard_info_paths = []
-    blobboard_paths = []
-    boards = os.listdir(os.path.join(path, "patterns"))
-    boards.sort()
-    for i in range(0, len(boards), 2):
-        blobboard_info_paths.append(boards[i])
-        blobboard_paths.append(boards[i+1])
+    resize = torchvision.transforms.Resize((4000, 6000)).to(device)
 
-    blobboard_json = read_json(os.path.join(path, "patterns", blobboard_info_paths[0]))
+    blobboard_shape = (7087, 7087)
+    homographies = torch.stack([
+        sample_homography(blobboard_shape, (4000, 6000), **homography_kwargs)
+        for _ in range(len(backgrounds))
+    ]).to(device)
+    torch.save(homographies, os.path.join(path, "homographies.pt"))
+
+    blobboard_json = read_json(boards[0][0])
     blobboard_shape = blobboard_json["preamble"]["board_config"]["canvas_size"]
     blobboard_shape = (
         physical_to_logical_distance(
@@ -493,24 +485,12 @@ def generate_dataset(cfg, path, is_validation=False, is_hard=False):
             blobboard_json["preamble"]["board_config"]["print_density"]["value"]
         )
     )
-    if is_hard:
-        transforms = v2.Compose([
-            v2.ColorJitter(brightness=(0.3, 1), contrast=.8, saturation=.5),
-            v2.GaussianBlur(kernel_size=(5, 5)),
-            v2.GaussianNoise()
-        ]).to(device)
-    else:
-        transforms = v2.Compose([
-            v2.ColorJitter(),
-            v2.GaussianBlur(kernel_size=(5, 5)),
-            v2.GaussianNoise()
-        ])
 
     keypoints = []
-    for i in range(len(backgrounds_paths)):
+    for i in range(len(backgrounds)):
         if os.path.exists(os.path.join(path, "warped_images", f"{i:04}.png")):
             continue
-        img = torchvision.io.decode_image(backgrounds_paths[i], torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+        img = torchvision.io.decode_image(os.path.join(os.getcwd(), backgrounds[i]), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
         assert img.size(0) == 1
         # if img.shape[1] > img.shape[2]:
         #     crop1 = (img.shape[1] - img.shape[2]) // 2
@@ -521,17 +501,16 @@ def generate_dataset(cfg, path, is_validation=False, is_hard=False):
         #     crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[2] else crop1 + 1
         #     img = resize(img[:, :, crop1:-crop2])
         # else:
-        img = resize(img)
-        img = img.to(device)
+        img = resize(img).to(device)
         blobboard = torchvision.io.decode_image(
-            os.path.join(path, "patterns", blobboard_paths[i]),
-            torchvision.io.ImageReadMode.GRAY).to(torch.float32
-        ).to(device) / 255
+            boards[i][1],
+            torchvision.io.ImageReadMode.GRAY
+        ).to(torch.float32).to(device) / 255
         warped_image = map_blobs(img.unsqueeze(0), homographies[i].unsqueeze(0), blobboard.unsqueeze(0), cfg)
-        warped_image = transforms(warped_image)
+        warped_image = image_transform(warped_image)
         torchvision.utils.save_image(warped_image, os.path.join(path, "warped_images", f"{i:04}.png"))
 
-        blobboard_info = read_json(os.path.join(path, "patterns", blobboard_info_paths[i]))
+        blobboard_info = read_json(boards[i][0])
         keypoints = keypoints_to_torch(
             blobboard_info["blobs"],
             blobboard_info["preamble"]["board_config"]["print_density"]["value"],
@@ -613,7 +592,6 @@ def generate_dataset(cfg, path, is_validation=False, is_hard=False):
                 cfg,
                 psf=psf
             )
-            # anchor_patches[..., 16, :] = torch.zeros((anchor_patches.size(0), 1, 32))
             for j in range(anchor_patches.size(0)):
                 torchvision.utils.save_image(
                     anchor_patches[j],
@@ -638,7 +616,15 @@ def main():
     argument_parser = argparse.ArgumentParser()
     argument_parser.add_argument(
         "--path",
-        default=os.path.join(os.getcwd(), "data")
+        default=os.path.join(os.getcwd(), "data/datasets")
+    )
+    argument_parser.add_argument(
+        "--backgrounds",
+        default=os.path.join(os.getcwd(), "data/backgrounds/openloris-location")
+    )
+    argument_parser.add_argument(
+        "--boards",
+        default=os.path.join(os.getcwd(), "data/patterns")
     )
     argument_parser.add_argument(
         "--config_file",
@@ -668,55 +654,54 @@ def main():
     # torch.manual_seed(cfg.TRAINING.SEED)
     # np.random.seed(cfg.TRAINING.SEED)
 
-    os.makedirs(args.path, exist_ok=True)
-    os.makedirs(os.path.join(args.path, "training"), exist_ok=True)
-    os.makedirs(os.path.join(args.path, "validation"), exist_ok=True)
+    validation_split = 0.2
 
-    if not os.path.exists(os.path.join(args.path, "training", "homographies.pt")) \
-            or not os.path.exists(os.path.join(args.path, "training", "backgrounds.txt")) \
-            or not os.path.exists(os.path.join(args.path, "validation", "homographies.pt")) \
-            or not os.path.exists(os.path.join(args.path, "validation", "backgrounds.txt")):
+    boards = []
+    board_files = os.listdir(args.boards)
+    board_files.sort()
+    for i in range(0, len(board_files), 2):
+        assert board_files[i][:-4] == board_files[i+1][:-3]
+        boards.append((os.path.join(args.boards, board_files[i]), os.path.join(args.boards, board_files[i+1])))
+    random.shuffle(boards)
+ 
+    background_filenames = fchain(
+        list,
+        curry(filter)(curry(flip(str.endswith))(".png")),
+        curry(reduce)(list.__add__),
+        curry(map)(lambda x: list(map(lambda f: os.path.join(x[0], f), x[2]))),
+    )(os.walk(os.path.join("./data/backgrounds/openloris-location")))
+    random.shuffle(background_filenames)
 
-        background_filenames = fchain(
-            list,
-            curry(filter)(curry(flip(str.endswith))(".png")),
-            curry(reduce)(list.__add__),
-            curry(map)(lambda x: list(map(lambda f: os.path.join(x[0], f), x[2]))),
-        )(os.walk(os.path.join("./data/backgrounds/openloris-location")))
-        random.shuffle(background_filenames)
-        # Fairly distribute the available backgrounds between training and validation datasets
-        validation_split = cfg.BLOBINATOR.VALIDATION_NUM_BACKGROUNDS / cfg.BLOBINATOR.TRAINING_NUM_BACKGROUNDS
-        training_background_filenames = background_filenames[int(len(background_filenames) * validation_split):]
-        training_background_filenames = training_background_filenames[:cfg.BLOBINATOR.TRAINING_NUM_BACKGROUNDS]
-        validation_background_filenames = background_filenames[:int(len(background_filenames) * validation_split)]
-        validation_background_filenames = validation_background_filenames[:cfg.BLOBINATOR.VALIDATION_NUM_BACKGROUNDS]
+    num_images_total = min(len(boards), len(background_filenames))
+    boards = boards[:num_images_total]
+    background_filenames = background_filenames[:num_images_total]
 
-        create_manifest(
+    num_validation_images = int(validation_split * num_images_total)
+    num_training_images = num_images_total - num_validation_images
+    validation_boards = boards[:num_validation_images]
+    validation_backgrounds = background_filenames[:num_validation_images]
+    training_boards = boards[num_validation_images:]
+    training_backgrounds = background_filenames[num_validation_images:]
+
+    for i, (dataset_name, image_transform, homography_kwargs) in enumerate(DATASETS):
+        generate_dataset(
             cfg,
-            os.path.join(args.path, "hard", "training"),
-            training_background_filenames,
-            is_hard=True
+            os.path.join(args.path, dataset_name, "training"),
+            training_backgrounds[i*(num_training_images // len(DATASETS)):(i+1)*(num_training_images // len(DATASETS))+1],
+            training_boards[i*(num_training_images // len(DATASETS)):(i+1)*(num_training_images // len(DATASETS))+1],
+            image_transform,
+            homography_kwargs,
+            is_validation=False
         )
-        create_manifest(
+        generate_dataset(
             cfg,
-            os.path.join(args.path, "hard", "validation"),
-            validation_background_filenames,
-            is_hard=True
+            os.path.join(args.path, dataset_name, "validation"),
+            validation_backgrounds[i*(num_validation_images // len(DATASETS)):(i+1)*(num_validation_images // len(DATASETS))+1],
+            validation_boards[i*(num_validation_images // len(DATASETS)):(i+1)*(num_validation_images // len(DATASETS))+1],
+            image_transform,
+            homography_kwargs,
+            is_validation=True
         )
-        create_manifest(
-            cfg,
-            os.path.join(args.path, "easy", "training"),
-            training_background_filenames,
-        )
-        create_manifest(
-            cfg,
-            os.path.join(args.path, "easy", "validation"),
-            validation_background_filenames,
-        )
-    generate_dataset(cfg, os.path.join(args.path, "hard", "training"), is_hard=True)
-    generate_dataset(cfg, os.path.join(args.path, "hard", "validation"), is_validation=True, is_hard=True)
-    generate_dataset(cfg, os.path.join(args.path, "easy", "training"))
-    generate_dataset(cfg, os.path.join(args.path, "easy", "validation"), is_validation=True)
 
 
 if __name__ == "__main__":
