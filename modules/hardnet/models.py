@@ -53,7 +53,7 @@ class HardNet(nn.Module):
                  coords,
                  patch_size,
                  scale,
-                 is_desc256,
+                #  is_desc256,
                  orientCorrect=True):
         super(HardNet, self).__init__()
 
@@ -87,7 +87,7 @@ class HardNet(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.1),
             # Maybe put Maxpooling here like:
-            nn.MaxPool2d(kernel_size=(8,1)),
+            nn.MaxPool2d(kernel_size=(8, 1)),
             #nn.Conv2d(128, 128, kernel_size=8, bias=False),                     # 1x1
             nn.Conv2d(128, 128, kernel_size=(1,8), bias=False),
             nn.BatchNorm2d(128, affine=False),

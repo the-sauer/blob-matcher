@@ -89,7 +89,7 @@ def create_train_loader(cfg, sequences):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorTrainingData(cfg, "./data/training")
+    transformer_dataset = BlobinatorTrainingData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training"))
     # transformer_dataset.preprocess()
     train_loader = torch.utils.data.DataLoader(
         transformer_dataset,
@@ -107,7 +107,7 @@ def create_test_loaders(padTo):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorValidationData(cfg, "./data/validation")
+    transformer_dataset = BlobinatorValidationData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation"))
     val_loaders = [{
         'name':
         'multiple_sequences_validation',
@@ -551,7 +551,7 @@ if __name__ == '__main__':
                     coords=cfg.TRAINING.COORDS,
                     patch_size=cfg.TRAINING.IMAGE_SIZE,
                     scale=cfg.TRAINING.SCALE,
-                    is_desc256=cfg.TRAINING.IS_DESC_256,
+                    #is_desc256=cfg.TRAINING.IS_DESC_256,
                     orientCorrect=cfg.TRAINING.ORIENT_CORRECTION)
     logger, file_logger = None, None
 
@@ -562,5 +562,6 @@ if __name__ == '__main__':
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.TRAINING.GPU_ID)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
     model.to(device)
     main(cfg, model, device, logger, file_logger)
