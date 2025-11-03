@@ -6,11 +6,12 @@ import math
 import os
 import random
 import sys
-from typing import Optional
+from typing import  Any, Optional
 
 
 import kornia
 import numpy as np
+import pdf2image
 import torch
 import torchvision
 from torchvision.transforms import v2
@@ -233,7 +234,7 @@ def sample_homography(
     return torch.tensor(homography @ translation2 @ np.diag([scale, scale, 1]) @ translation1, dtype=torch.float32)
 
 
-def map_blobs(background: torch.Tensor, homography: torch.Tensor, blobs: torch.Tensor, cfg) -> torch.Tensor:
+def map_blobs(background: torch.Tensor, homography: torch.Tensor, blobs: torch.Tensor, cfg, blob_alpha=1.0) -> torch.Tensor:
     """
     Warps the blobsheet into the background according to a homography.
 
@@ -253,11 +254,11 @@ def map_blobs(background: torch.Tensor, homography: torch.Tensor, blobs: torch.T
         (background.shape[2], background.shape[3]),
     )
     mask = kornia.geometry.transform.warp_perspective(
-        torch.ones_like(blobs),
+        torch.ones_like(blobs) * blob_alpha,
         homography,
         (background.shape[2], background.shape[3])
     )
-    mask = (mask > 0.999).float()
+    #mask = (mask > 0.999).float()
     warped_blobs = warped_blobs * mask + background * (1 - mask)
     return warped_blobs
 
@@ -399,7 +400,7 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
 
     # Stack homogeneous coords
     ones = torch.ones_like(xs)
-    coords = torch.stack([xs, ys, ones], dim=-1)
+    coords = torch.stack([xs, ys, ones], dim=-1).to(A.device)
     coords = coords.view(1, P, P, 3)
     coords = coords.expand(B, -1, -1, -1)  # (B, P, P, 3)
 
@@ -608,6 +609,183 @@ def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography
                     )
 
 
+def generate_real_dataset(homographies, cfg, path):
+    def keypoint_to_torch(resolution, border_width, canvas_offset):
+        def _keypoint_to_torch(keypoint):
+            return torch.tensor(
+                [
+                    *physical_to_logical_coordinates(
+                        (keypoint["center"][0]["value"], keypoint["center"][1]["value"]),
+                        resolution,
+                        border_width,
+                        canvas_offset
+                    ),
+                    physical_to_logical_distance(keypoint["σ"]["value"], resolution),
+                    0
+                ],
+                dtype=torch.float32
+            )
+        return _keypoint_to_torch
+
+    def keypoints_to_torch(keypoints, resolution, border_width, canvas_offset):
+        return torch.stack(list(map(keypoint_to_torch(resolution, border_width, canvas_offset), keypoints)))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.mps.is_available() else "cpu"))
+    print(device)
+
+    for i, (image, board) in enumerate(homographies.keys()):
+        # if image == "./data/real_image_data/images/IMG_2437.JPG":
+        #     continue
+        img = torchvision.io.decode_image(image, torchvision.io.ImageReadMode.GRAY).to(device).to(torch.float32) / 255
+
+        blobboard_info = read_json(f"./data/real_image_data/boards/blob_board_{board}.json")
+        keypoints = keypoints_to_torch(
+            blobboard_info["blobs"],
+            blobboard_info["preamble"]["board_config"]["print_density"]["value"],
+            blobboard_info["preamble"]["board_config"]["border_width"]["value"],
+            (
+                (blobboard_info["preamble"]["board_config"]["canvas_size"]["width"]["value"]
+                    - blobboard_info["preamble"]["board_config"]["board_size"]["width"]["value"]) / 2,
+                (blobboard_info["preamble"]["board_config"]["canvas_size"]["height"]["value"]
+                    - blobboard_info["preamble"]["board_config"]["board_size"]["height"]["value"]) / 2,
+            )
+        )
+        sigma_cutoff = blobboard_info["preamble"]["pattern_config"]["sigma_cutoff"]
+
+        blobboard = pdf2image.convert_from_path(
+            f"./data/real_image_data/boards/blob_board_{board}.pdf",
+            dpi=blobboard_info["preamble"]["board_config"]["print_density"]["value"],
+            grayscale=True
+        )[0]
+        blobboard = torchvision.transforms.functional.pil_to_tensor(blobboard).to(device).to(torch.float32) / 255
+        # Map the canvas into normalized coordinates
+        translation = torch.tensor([
+            physical_to_logical_distance(
+                -(blobboard_info["preamble"]["board_config"]["canvas_size"]["width"]["value"]
+                    - blobboard_info["preamble"]["board_config"]["board_size"]["width"]["value"]) / 2
+                    - blobboard_info["preamble"]["board_config"]["border_width"]["value"],
+                blobboard_info["preamble"]["board_config"]["print_density"]["value"]
+            ),
+            physical_to_logical_distance(
+                -(blobboard_info["preamble"]["board_config"]["canvas_size"]["height"]["value"]
+                    - blobboard_info["preamble"]["board_config"]["board_size"]["height"]["value"]) / 2
+                    - blobboard_info["preamble"]["board_config"]["border_width"]["value"],
+                blobboard_info["preamble"]["board_config"]["print_density"]["value"]
+            )
+        ], dtype=torch.float32)
+        translation_mat = torch.eye(3, dtype=torch.float32)
+        translation_mat[:2, 2] = translation
+        scale = torch.tensor([
+            1 / physical_to_logical_distance(
+                blobboard_info["preamble"]["board_config"]["board_size"]["width"]["value"]
+                - 2 * blobboard_info["preamble"]["board_config"]["border_width"]["value"],
+                blobboard_info["preamble"]["board_config"]["print_density"]["value"]
+            ),
+            1 / physical_to_logical_distance(
+                blobboard_info["preamble"]["board_config"]["board_size"]["height"]["value"]
+                - 2 * blobboard_info["preamble"]["board_config"]["border_width"]["value"],
+                blobboard_info["preamble"]["board_config"]["print_density"]["value"]
+            ),
+            1
+        ], dtype=torch.float32)
+        normalization = torch.diag(scale) @ translation_mat
+        os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
+        torchvision.utils.save_image(
+            map_blobs(
+                img.unsqueeze(0),
+                (homographies[(image, board)].to(torch.float32) @ normalization).to(device).unsqueeze(0),
+                blobboard.unsqueeze(0),
+                cfg,
+                blob_alpha=0.5
+            ),
+            os.path.join(path, "warped_images", f"{i:04}.png")
+        )
+
+        keypoint_pairs = zip(
+            map(lambda k: (k[:2], (k[2], k[2]), 0), keypoints),
+            map(conic_to_ellipse, map(curry(keypoint_to_mapped_conic)(homographies[(image, board)].to(torch.float32) @ normalization), keypoints))
+        )
+        min_keypoint_size = 4
+        anchor_keypoints, positive_keypoints = list(zip(*filter(
+            lambda x: x[1][0][0] >= 0 and x[1][0][0] < img.shape[2] and x[1][0][1] >= 0 and x[1][0][1] < img.shape[1] and (x[1][1][0] + x[1][1][1]) >= min_keypoint_size,
+            filter(
+                lambda x: x[0] is not None and x[1] is not None,
+                keypoint_pairs
+            )
+        )))
+        anchor_keypoints = list(map(lambda k: (k[0], k[1], (k[2] + torch.rand((1,)) * 2 * math.pi % math.pi)), anchor_keypoints))
+        garbage_locations = torch.rand((len(positive_keypoints), 2)) * torch.tensor([[4000, 6000]]).expand(len(positive_keypoints), -1)
+        positive_keypoint_scales = torch.tensor(list(map(lambda k: k[1][0], positive_keypoints)))
+        garbage_scales = torch.normal(torch.mean(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)), torch.std(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)))
+        garbage_orientations = torch.rand((len(positive_keypoints),)) * 2 * np.pi
+        garbage_keypoints = list(zip(garbage_locations, zip(garbage_scales, garbage_scales), garbage_orientations))
+
+        anchor_transforms = torch.stack(list(map(ellipse_to_affine, anchor_keypoints))).to(device)
+        positive_transforms = torch.stack(list(map(ellipse_to_affine, positive_keypoints))).to(device)
+        garbage_transforms = torch.stack(list(map(ellipse_to_affine, garbage_keypoints))).to(device)
+
+        for psf in [4, 8, 16, 32, 64, 96, 128]:
+            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
+            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "positives"), exist_ok=True)
+            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "garbage"), exist_ok=True)
+            is_validation = True
+            if is_validation:
+                os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "false_anchors"), exist_ok=True)
+                false_anchor_map = torch.empty((2, anchor_transforms.size(0)))
+                false_anchor_map[0] = torch.randperm(anchor_transforms.size(0))
+                false_anchor_map[1, 1:] = false_anchor_map[0, :-1]
+                false_anchor_map[1, 0] = false_anchor_map[0, -1]
+                false_anchor_indices = false_anchor_map[:, false_anchor_map[0].argsort()]
+                false_anchor_tranforms = anchor_transforms[false_anchor_indices[1, :].to(int)]
+                false_anchor_patches = get_patch(
+                    blobboard.unsqueeze(0).expand(false_anchor_tranforms.size(0), -1, -1, -1),
+                    false_anchor_tranforms,
+                    cfg,
+                    sigma_cutoff=sigma_cutoff,
+                    psf=psf
+                )
+                for j in range(false_anchor_patches.size(0)):
+                    torchvision.utils.save_image(
+                        false_anchor_patches[j],
+                        os.path.join(path, "patches", f"{int(psf)}", "false_anchors", f"{i:04}_{j:04}.png")
+                    )
+
+            anchor_patches = get_patch(
+                blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1),
+                anchor_transforms,
+                cfg,
+                sigma_cutoff=sigma_cutoff,
+                psf=psf
+            )
+            positive_patches = get_patch(
+                img.expand(positive_transforms.size(0), -1, -1, -1),
+                positive_transforms,
+                cfg,
+                sigma_cutoff=sigma_cutoff,
+                psf=psf
+            )
+            garbage_patches = get_patch(
+                img.unsqueeze(0).expand(garbage_transforms.size(0), -1, -1, -1),
+                garbage_transforms,
+                cfg,
+                psf=psf
+            )
+            for j in range(anchor_patches.size(0)):
+                torchvision.utils.save_image(
+                    anchor_patches[j],
+                    os.path.join(path, "patches", f"{int(psf)}", "anchors", f"{i:04}_{j:04}.png")
+                )
+                torchvision.utils.save_image(
+                    positive_patches[j],
+                    os.path.join(path, "patches", f"{int(psf)}", "positives", f"{i:04}_{j:04}.png")
+                )
+                if j < garbage_patches.size(0):
+                    torchvision.utils.save_image(
+                        garbage_patches[j],
+                        os.path.join(path, "patches", f"{int(psf)}", "garbage", f"{i:04}_{j:04}.png")
+                    )
+
+
 def main():
     sys.path.insert(0, os.getcwd())
     from configs.defaults import _C as cfg
@@ -654,6 +832,9 @@ def main():
     # torch.manual_seed(cfg.TRAINING.SEED)
     # np.random.seed(cfg.TRAINING.SEED)
 
+    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/2025_11_03/real")
+    return
+
     validation_split = 0.2
 
     boards = []
@@ -663,7 +844,7 @@ def main():
         assert board_files[i][:-4] == board_files[i+1][:-3]
         boards.append((os.path.join(args.boards, board_files[i]), os.path.join(args.boards, board_files[i+1])))
     random.shuffle(boards)
- 
+
     background_filenames = fchain(
         list,
         curry(filter)(curry(flip(str.endswith))(".png")),
