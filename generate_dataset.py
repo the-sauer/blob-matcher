@@ -25,7 +25,7 @@ dpi = 1 / ureg.inch
 
 
 # The datasets to be creted. Containing a name, a transform for the images, and parameters for the homography sampling
-DATASETS: list[tuple[str, v2.Transform, dict[str, Any]]] = [
+DATASETS: list[tuple[str, v2.Transform, dict[str, Any], dict[str, Any]]] = [
     (
         "easy",
         v2.Compose([
@@ -33,27 +33,17 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, Any]]] = [
             v2.GaussianBlur(kernel_size=(5, 5)),
             v2.GaussianNoise()
         ]),
-        {}
+        {},
+        {
+            "location_aug": 0.05,
+            "scale_aug": 0.05,
+        }
     ),
     (
         "hard",
         v2.Compose([
-            v2.ColorJitter(),
+            v2.ColorJitter(brightness=(0.3, 1), contrast=.8, saturation=.5),
             v2.GaussianBlur(kernel_size=(7, 7)),
-            v2.GaussianNoise()
-        ]),
-        {
-            "base_scale": 0.5,
-            "scaling_amplitude": 0.5,
-            "perspective_amplitude_x": 0.5,
-            "perspective_amplitude_y": 2
-        }
-    ),
-    (
-        "very_hard",
-        v2.Compose([
-            v2.ColorJitter(),
-            v2.GaussianBlur(kernel_size=(11, 11)),
             v2.GaussianNoise()
         ]),
         {
@@ -61,8 +51,26 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, Any]]] = [
             "scaling_amplitude": 0.5,
             "perspective_amplitude_x": 1,
             "perspective_amplitude_y": 4
+        },
+        {
+            "location_aug": 0.1,
+            "scale_aug": 0.1,
         }
     ),
+    # (
+    #     "very_hard",
+    #     v2.Compose([
+    #         v2.ColorJitter(),
+    #         v2.GaussianBlur(kernel_size=(11, 11)),
+    #         v2.GaussianNoise()
+    #     ]),
+    #     {
+    #         "base_scale": 0.2,
+    #         "scaling_amplitude": 0.5,
+    #         "perspective_amplitude_x": 1,
+    #         "perspective_amplitude_y": 4
+    #     }
+    # ),
 ]
 
 
@@ -331,6 +339,22 @@ def conic_to_ellipse(conic) -> Optional[tuple[np.typing.NDArray, tuple[float, fl
     return location, (semi_major_axis, semi_minor_axis), angle
 
 
+def augment_ellipse(location_aug=0.1, scale_aug=0.1):
+    def _augment_ellipse(ellipse):
+        if ellipse is None:
+            return None
+        location, (semi_major, semi_minor), orientation = ellipse
+        return (
+            location + torch.distributions.normal.Normal(loc=0, scale=location_aug*semi_minor).sample((2,)).to(location.device),
+            (
+                semi_major + torch.distributions.normal.Normal(loc=0, scale=scale_aug*semi_major).sample((1,)),
+                semi_minor + torch.distributions.normal.Normal(loc=0, scale=scale_aug*semi_minor).sample((1,))
+            ),
+            orientation + torch.distributions.uniform.Uniform(0, 2 * math.pi).sample((1,))
+        )
+    return _augment_ellipse
+
+
 def ellipse_to_affine(ellipse) -> torch.Tensor:
     """
     Finds an affine transformation that transforms the unit circle into the ellipse.
@@ -377,8 +401,8 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
         A 2-dim `numpy` Array containing the image data of the patch.
         """
     device = img.device
-    P = cfg.INPUT.IMAGE_SIZE
     PSF = psf if psf is not None else cfg.BLOBINATOR.PATCH_SCALE_FACTOR
+    P = 8 * cfg.INPUT.IMAGE_SIZE
     B, _, Hs, Ws = img.shape
 
     # Create normalized grid for output patch
@@ -437,10 +461,12 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
 
     background = torch.full_like(warped, pad_with)
     output = warped * mask + background * (1 - mask)
+    output = torch.nn.functional.avg_pool2d(output, (8, 8))
+    assert output.shape[2] == cfg.INPUT.IMAGE_SIZE and output.shape[3] == cfg.INPUT.IMAGE_SIZE
     return output
 
 
-def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography_kwargs, is_validation=False):
+def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography_kwargs, augmentation_args, is_validation=False):
     def keypoint_to_torch(resolution, border_width, canvas_offset):
         def _keypoint_to_torch(keypoint):
             return torch.tensor(
@@ -527,7 +553,7 @@ def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography
 
         keypoint_pairs = zip(
             map(lambda k: (k[:2], (k[2], k[2]), 0), keypoints),
-            map(conic_to_ellipse, map(curry(keypoint_to_mapped_conic)(homographies[i]), keypoints))
+            map(augment_ellipse(**augmentation_args), map(conic_to_ellipse, map(curry(keypoint_to_mapped_conic)(homographies[i]), keypoints)))
         )
         min_keypoint_size = 4
         anchor_keypoints, positive_keypoints = list(zip(*filter(
@@ -634,8 +660,6 @@ def generate_real_dataset(homographies, cfg, path):
     print(device)
 
     for i, (image, board) in enumerate(homographies.keys()):
-        # if image == "./data/real_image_data/images/IMG_2437.JPG":
-        #     continue
         img = torchvision.io.decode_image(image, torchvision.io.ImageReadMode.GRAY).to(device).to(torch.float32) / 255
 
         blobboard_info = read_json(f"./data/real_image_data/boards/blob_board_{board}.json")
@@ -794,7 +818,7 @@ def main():
     argument_parser = argparse.ArgumentParser()
     argument_parser.add_argument(
         "--path",
-        default=os.path.join(os.getcwd(), "data/datasets")
+        default=os.path.join(os.getcwd(), "data/datasets/new")
     )
     argument_parser.add_argument(
         "--backgrounds",
@@ -832,8 +856,7 @@ def main():
     # torch.manual_seed(cfg.TRAINING.SEED)
     # np.random.seed(cfg.TRAINING.SEED)
 
-    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/2025_11_03/real")
-    return
+    # generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/2025_11_03/real_2")
 
     validation_split = 0.2
 
@@ -864,7 +887,7 @@ def main():
     training_boards = boards[num_validation_images:]
     training_backgrounds = background_filenames[num_validation_images:]
 
-    for i, (dataset_name, image_transform, homography_kwargs) in enumerate(DATASETS):
+    for i, (dataset_name, image_transform, homography_kwargs, augmentation_args) in enumerate(DATASETS):
         generate_dataset(
             cfg,
             os.path.join(args.path, dataset_name, "training"),
@@ -872,6 +895,7 @@ def main():
             training_boards[i*(num_training_images // len(DATASETS)):(i+1)*(num_training_images // len(DATASETS))+1],
             image_transform,
             homography_kwargs,
+            augmentation_args,
             is_validation=False
         )
         generate_dataset(
@@ -881,6 +905,7 @@ def main():
             validation_boards[i*(num_validation_images // len(DATASETS)):(i+1)*(num_validation_images // len(DATASETS))+1],
             image_transform,
             homography_kwargs,
+            augmentation_args,
             is_validation=True
         )
 
