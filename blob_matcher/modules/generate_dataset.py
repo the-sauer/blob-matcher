@@ -17,30 +17,35 @@ import torchvision
 from torchvision.transforms import v2
 
 
-from modules import curry, fchain, flip
-path_to_blobboards = os.path.join(os.getcwd(), "../BlobBoards.jl/python")
-sys.path.insert(0, path_to_blobboards)
-from BlobBoards.core import ureg, BlobGenerator
-dpi = 1 / ureg.inch
+from blob_matcher.modules import curry, fchain, flip
+try:
+    path_to_blobboards = os.path.join(os.getcwd(), "../BlobBoards.jl/python")
+    sys.path.insert(0, path_to_blobboards)
+    from BlobBoards.core import ureg, BlobGenerator
+    dpi = 1 / ureg.inch
+except ModuleNotFoundError:
+    import Pint
+    ureg = Pint.UnitRegistry()
+    dpi = 1 / ureg.inch
 
 
 # The datasets to be creted. Containing a name, a transform for the images, and parameters for the homography sampling
 DATASETS: list[tuple[str, v2.Transform, dict[str, Any], dict[str, Any]]] = [
+    # (
+    #     "easy",
+    #     v2.Compose([
+    #         v2.ColorJitter(),
+    #         v2.GaussianBlur(kernel_size=(5, 5)),
+    #         v2.GaussianNoise()
+    #     ]),
+    #     {},
+    #     {
+    #         "location_aug": 0.05,
+    #         "scale_aug": 0.05,
+    #     }
+    # ),
     (
-        "easy",
-        v2.Compose([
-            v2.ColorJitter(),
-            v2.GaussianBlur(kernel_size=(5, 5)),
-            v2.GaussianNoise()
-        ]),
-        {},
-        {
-            "location_aug": 0.05,
-            "scale_aug": 0.05,
-        }
-    ),
-    (
-        "hard",
+        "hard3",
         v2.Compose([
             v2.ColorJitter(brightness=(0.3, 1), contrast=.8, saturation=.5),
             v2.GaussianBlur(kernel_size=(7, 7)),
@@ -48,9 +53,10 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, Any], dict[str, Any]]] = [
         ]),
         {
             "base_scale": 0.2,
-            "scaling_amplitude": 0.5,
-            "perspective_amplitude_x": 1,
-            "perspective_amplitude_y": 4
+            "scaling_amplitude": 0.1,
+            "perspective_amplitude_x": 0.9,
+            "perspective_amplitude_y": 0.9,
+            "allow_artifacts": True
         },
         {
             "location_aug": 0.1,
@@ -401,8 +407,9 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
         A 2-dim `numpy` Array containing the image data of the patch.
         """
     device = img.device
+    patch_size = cfg.INPUT.IMAGE_SIZE if cfg is not None else 32
     PSF = psf if psf is not None else cfg.BLOBINATOR.PATCH_SCALE_FACTOR
-    P = 8 * cfg.INPUT.IMAGE_SIZE
+    P = 8 * patch_size
     B, _, Hs, Ws = img.shape
 
     # Create normalized grid for output patch
@@ -460,9 +467,9 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
     )
 
     background = torch.full_like(warped, pad_with)
-    output = warped * mask + background * (1 - mask)
+    output = warped* mask + background * (1 - mask)
     output = torch.nn.functional.avg_pool2d(output, (8, 8))
-    assert output.shape[2] == cfg.INPUT.IMAGE_SIZE and output.shape[3] == cfg.INPUT.IMAGE_SIZE
+    assert output.shape[2] == patch_size and output.shape[3] == patch_size
     return output
 
 
@@ -556,17 +563,28 @@ def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography
             map(augment_ellipse(**augmentation_args), map(conic_to_ellipse, map(curry(keypoint_to_mapped_conic)(homographies[i]), keypoints)))
         )
         min_keypoint_size = 4
-        anchor_keypoints, positive_keypoints = list(zip(*filter(
-            lambda x: x[1][0][0] >= 0 and x[1][0][0] < warped_image.shape[3] and x[1][0][1] >= 0 and x[1][0][1] < warped_image.shape[2] and (x[1][1][0] + x[1][1][1]) >= min_keypoint_size,
-            filter(
-                lambda x: x[0] is not None and x[1] is not None,
-                keypoint_pairs
-            )
-        )))
+        try:
+            anchor_keypoints, positive_keypoints = list(zip(*filter(
+                lambda x: x[1][0][0] >= 0 and x[1][0][0] < warped_image.shape[3] and x[1][0][1] >= 0 and x[1][0][1] < warped_image.shape[2] and (x[1][1][0] + x[1][1][1]) >= min_keypoint_size,
+                filter(
+                    lambda x: x[0] is not None and x[1] is not None,
+                    keypoint_pairs
+                )
+            )))
+        except ValueError:
+            logging.warning(f"Skipping image {i:04}")
+            continue
         anchor_keypoints = list(map(lambda k: (k[0], k[1], (k[2] + torch.rand((1,)) * 2 * math.pi % math.pi)), anchor_keypoints))
         garbage_locations = torch.rand((len(positive_keypoints), 2)) * torch.tensor([[4000, 6000]]).expand(len(positive_keypoints), -1)
         positive_keypoint_scales = torch.tensor(list(map(lambda k: k[1][0], positive_keypoints)))
-        garbage_scales = torch.normal(torch.mean(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)), torch.std(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)))
+        garbage_scales = torch.normal(
+            torch.mean(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)),
+            torch.where(
+                torch.std(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)) >= 0,
+                torch.std(positive_keypoint_scales).unsqueeze(0).expand(garbage_locations.size(0)),
+                torch.zeros((garbage_locations.size(0),))
+            )
+        )
         garbage_orientations = torch.rand((len(positive_keypoints),)) * 2 * np.pi
         garbage_keypoints = list(zip(garbage_locations, zip(garbage_scales, garbage_scales), garbage_orientations))
 
@@ -635,7 +653,7 @@ def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography
                     )
 
 
-def generate_real_dataset(homographies, cfg, path):
+def generate_real_dataset(homographies, cfg, path, validation_boards):
     def keypoint_to_torch(resolution, border_width, canvas_offset):
         def _keypoint_to_torch(keypoint):
             return torch.tensor(
@@ -656,13 +674,17 @@ def generate_real_dataset(homographies, cfg, path):
     def keypoints_to_torch(keypoints, resolution, border_width, canvas_offset):
         return torch.stack(list(map(keypoint_to_torch(resolution, border_width, canvas_offset), keypoints)))
 
+
+    augmentation = v2.ColorJitter(brightness=(0.3, 1), contrast=.8, saturation=.5)
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.mps.is_available() else "cpu"))
     print(device)
 
     for i, (image, board) in enumerate(homographies.keys()):
-        img = torchvision.io.decode_image(image, torchvision.io.ImageReadMode.GRAY).to(device).to(torch.float32) / 255
 
-        blobboard_info = read_json(f"./data/real_image_data/boards/blob_board_{board}.json")
+        subdir = "validation" if board in validation_boards else "training"
+        img = torchvision.io.decode_image(image, torchvision.io.ImageReadMode.GRAY).to(device).to(torch.float32) / 255
+        img = augmentation(img)
+        blobboard_info = read_json(f"./data/real_image_data/2025_11_05/boards/blob_board_{board}.json")
         keypoints = keypoints_to_torch(
             blobboard_info["blobs"],
             blobboard_info["preamble"]["board_config"]["print_density"]["value"],
@@ -677,7 +699,7 @@ def generate_real_dataset(homographies, cfg, path):
         sigma_cutoff = blobboard_info["preamble"]["pattern_config"]["sigma_cutoff"]
 
         blobboard = pdf2image.convert_from_path(
-            f"./data/real_image_data/boards/blob_board_{board}.pdf",
+            f"./data/real_image_data/2025_11_05/boards/blob_board_{board}.pdf",
             dpi=blobboard_info["preamble"]["board_config"]["print_density"]["value"],
             grayscale=True
         )[0]
@@ -713,7 +735,7 @@ def generate_real_dataset(homographies, cfg, path):
             1
         ], dtype=torch.float32)
         normalization = torch.diag(scale) @ translation_mat
-        os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
+        os.makedirs(os.path.join(path, subdir, "warped_images"), exist_ok=True)
         torchvision.utils.save_image(
             map_blobs(
                 img.unsqueeze(0),
@@ -722,7 +744,7 @@ def generate_real_dataset(homographies, cfg, path):
                 cfg,
                 blob_alpha=0.5
             ),
-            os.path.join(path, "warped_images", f"{i:04}.png")
+            os.path.join(path, subdir, "warped_images", f"{i:04}.png")
         )
 
         keypoint_pairs = zip(
@@ -749,12 +771,12 @@ def generate_real_dataset(homographies, cfg, path):
         garbage_transforms = torch.stack(list(map(ellipse_to_affine, garbage_keypoints))).to(device)
 
         for psf in [4, 8, 16, 32, 64, 96, 128]:
-            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
-            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "positives"), exist_ok=True)
-            os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "garbage"), exist_ok=True)
+            os.makedirs(os.path.join(path, subdir, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
+            os.makedirs(os.path.join(path, subdir, "patches", f"{int(psf)}", "positives"), exist_ok=True)
+            os.makedirs(os.path.join(path, subdir, "patches", f"{int(psf)}", "garbage"), exist_ok=True)
             is_validation = True
             if is_validation:
-                os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "false_anchors"), exist_ok=True)
+                os.makedirs(os.path.join(path, subdir, "patches", f"{int(psf)}", "false_anchors"), exist_ok=True)
                 false_anchor_map = torch.empty((2, anchor_transforms.size(0)))
                 false_anchor_map[0] = torch.randperm(anchor_transforms.size(0))
                 false_anchor_map[1, 1:] = false_anchor_map[0, :-1]
@@ -771,7 +793,7 @@ def generate_real_dataset(homographies, cfg, path):
                 for j in range(false_anchor_patches.size(0)):
                     torchvision.utils.save_image(
                         false_anchor_patches[j],
-                        os.path.join(path, "patches", f"{int(psf)}", "false_anchors", f"{i:04}_{j:04}.png")
+                        os.path.join(path, subdir, "patches", f"{int(psf)}", "false_anchors", f"{i:04}_{j:04}.png")
                     )
 
             anchor_patches = get_patch(
@@ -797,16 +819,16 @@ def generate_real_dataset(homographies, cfg, path):
             for j in range(anchor_patches.size(0)):
                 torchvision.utils.save_image(
                     anchor_patches[j],
-                    os.path.join(path, "patches", f"{int(psf)}", "anchors", f"{i:04}_{j:04}.png")
+                    os.path.join(path, subdir, "patches", f"{int(psf)}", "anchors", f"{i:04}_{j:04}.png")
                 )
                 torchvision.utils.save_image(
                     positive_patches[j],
-                    os.path.join(path, "patches", f"{int(psf)}", "positives", f"{i:04}_{j:04}.png")
+                    os.path.join(path, subdir, "patches", f"{int(psf)}", "positives", f"{i:04}_{j:04}.png")
                 )
                 if j < garbage_patches.size(0):
                     torchvision.utils.save_image(
                         garbage_patches[j],
-                        os.path.join(path, "patches", f"{int(psf)}", "garbage", f"{i:04}_{j:04}.png")
+                        os.path.join(path, subdir, "patches", f"{int(psf)}", "garbage", f"{i:04}_{j:04}.png")
                     )
 
 
@@ -856,8 +878,8 @@ def main():
     # torch.manual_seed(cfg.TRAINING.SEED)
     # np.random.seed(cfg.TRAINING.SEED)
 
-    # generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/2025_11_03/real_2")
-
+    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
+    return
     validation_split = 0.2
 
     boards = []

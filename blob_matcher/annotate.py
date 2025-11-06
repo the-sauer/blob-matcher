@@ -1,15 +1,11 @@
+import os
+
 import cv2
 import numpy as np
 import torch
 
-boards = ["btn", "win"]
-images = [
-    "./data/real_image_data/images/IMG_2419.JPG",
-    "./data/real_image_data/images/IMG_2429.JPG",
-    "./data/real_image_data/images/IMG_2437.JPG",
-]
-
-homographies = {}
+boards = ["3f9", "042", "84b", "105", "120", "374", "407", "681", "a26", "afd"]
+images = map(lambda f: os.path.join("./data/real_image_data/2025_11_05/images", f), os.listdir("./data/real_image_data/2025_11_05/images"))
 
 
 def get_homography(pts1, pts2):
@@ -28,7 +24,11 @@ def get_homography(pts1, pts2):
     homography[2, :2] = flat_homography[0][6:]
     return torch.as_tensor(homography, dtype=torch.float32)
 
+
 for image in images:
+    if os.path.exists(f"real_homographies{os.path.basename(image)}.pt"):
+        continue
+    homographies = {}
     for board in boards:
         # Load your image
         img = cv2.imread(image)
@@ -41,14 +41,15 @@ for image in images:
         def get_points(event, x, y, flags, param):
             if event == cv2.EVENT_LBUTTONDOWN:
                 points_src.append([x, y])
-                cv2.circle(img, (x, y), 5, (0, 255, 0), -1)
-                cv2.imshow(f"Select {board}", img)
+                cv2.circle(img, (x, y), 3, (0, 255, 0), -1)
+                cv2.imshow(f"Select {board} in {image}", img)
                 print(f"Point {len(points_src)}: ({x}, {y})")
 
         # Display image and register callback
-        cv2.namedWindow(f"Select {board}", cv2.WINDOW_NORMAL)
-        cv2.imshow(f"Select {board}", img)
-        cv2.setMouseCallback(f"Select {board}", get_points)
+        cv2.namedWindow(f"Select {board} in {image}", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(f"Select {board} in {image}", 2000, 1300)
+        cv2.imshow(f"Select {board} in {image}", img)
+        cv2.setMouseCallback(f"Select {board} in {image}", get_points)
 
         print("Click on 4 points in the image (top-left to bottom-right). Press 'q' to quit.")
 
@@ -56,12 +57,14 @@ for image in images:
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q') or len(points_src) == 4:
                 break
+            elif key == ord('r'):
+                points_src = []
 
         cv2.destroyAllWindows()
 
         # Ensure we have 4 points
         if len(points_src) != 4:
-            raise ValueError("You must select exactly 4 points.")
+            continue
 
         homographies[(image, board)] = get_homography(np.array([[0, 0], [1, 0], [1, 1], [0, 1]]), points_src)
-torch.save(homographies, "real_homographies.pt")
+    torch.save(homographies, f"real_homographies{os.path.basename(image)}.pt")

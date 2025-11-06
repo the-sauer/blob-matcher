@@ -8,9 +8,9 @@ import torchvision
 
 
 sys.path.insert(0, os.getcwd())
-from generate_dataset import ellipse_to_affine, get_patch, physical_to_logical_coordinates, physical_to_logical_distance, read_json
-from modules.hardnet.losses import distance_matrix_vector
-from modules.hardnet.models import HardNet
+from blob_matcher.modules.generate_dataset import ellipse_to_affine, get_patch, physical_to_logical_coordinates, physical_to_logical_distance, read_json
+from blob_matcher.modules.hardnet.losses import distance_matrix_vector
+from blob_matcher.modules.hardnet.models import HardNet
 
 
 def keypoint_to_torch(resolution, border_width, canvas_offset):

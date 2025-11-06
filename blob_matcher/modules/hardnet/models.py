@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 
 sys.path.append(os.getcwd().split("/modules/hardnet")[0])
-from modules.hardnet.utils import str2bool
+from blob_matcher.modules.hardnet.utils import str2bool
 
 import argparse
 parser = argparse.ArgumentParser(description='PyTorch HardNet')
@@ -30,7 +30,7 @@ parser.add_argument('--hard-augm',
 
 args, _ = parser.parse_known_args()
 
-from modules.ptn.pytorch.models import Transformer
+from blob_matcher.modules.ptn.pytorch.models import Transformer
 '''
 Class with models definition
 '''

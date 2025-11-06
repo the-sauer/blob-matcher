@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blob-matcher"
+version = "0.0.1"
+authors = [
+  { name="Hendrik Sauer", email="hendrik-sauer@mailbox.org" },
+]
+description = "Feature Matcher for the BlobBoards"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "Apache-2.0"
+license-files = ["LICEN[CS]E*"]
+dependencies = [
+  "opencv-python >= 4.12.0",
+    "kornia >= 0.8.1",
+    "numpy >= 2.2.6",
+    "pdf2image >= 1.17",
+    "Pint >= 0.25",
+    "seaborn >= 0.13.2",
+    "torch >= 2.8.0",
+    "torchvision >= 0.23.0",
+    "tqdm >=4.67.1",
+    "yacs >= 0.1.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/the-sauer/log-polar-descriptors"
+
+[tool.setuptools]
+packages = ["blob_matcher"]
