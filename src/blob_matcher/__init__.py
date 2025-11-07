@@ -8,7 +8,7 @@ import torch
 import torchvision
 
 
-from blob_matcher.modules.generate_dataset import ellipse_to_affine, get_patch, physical_to_logical_coordinates, physical_to_logical_distance, read_json
+from blob_matcher.scripts.generate_dataset import ellipse_to_affine, get_patch, physical_to_logical_coordinates, physical_to_logical_distance, read_json
 from blob_matcher.modules.hardnet.losses import distance_matrix_vector
 from blob_matcher.modules.hardnet.models import HardNet
 

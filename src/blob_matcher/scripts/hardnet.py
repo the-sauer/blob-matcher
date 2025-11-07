@@ -30,21 +30,20 @@ import sys
 import os
 sys.path.insert(0, os.getcwd())
 
-from configs.defaults import _C as cfg
-from modules.ptn.pytorch.data import transformerData, \
+from blob_matcher.modules.ptn.pytorch.data import transformerData, \
     transformerValTestData, \
     TripletPhotoTour, \
     Augmentor, \
     BlobinatorTrainingData, \
     BlobinatorValidationData
 # from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
-from modules.hardnet.loggers import Logger, FileLogger
-from modules.hardnet.losses import loss_HardNet_weighted
-from modules.hardnet.models import HardNet
+from blob_matcher.modules.hardnet.loggers import Logger, FileLogger
+from blob_matcher.modules.hardnet.losses import loss_HardNet_weighted
+from blob_matcher.modules.hardnet.models import HardNet
 from torch.utils.data import Dataset
-from modules.hardnet.utils import show_images
-from modules.hardnet.utils import cv2_scale, np_reshape, np_reshape64
-from modules.hardnet.eval_metrics import ErrorRateAt95Recall
+from blob_matcher.modules.hardnet.utils import show_images
+from blob_matcher.modules.hardnet.utils import cv2_scale, np_reshape, np_reshape64
+from blob_matcher.modules.hardnet.eval_metrics import ErrorRateAt95Recall
 import random
 import argparse
 import numpy as np
@@ -82,7 +81,7 @@ brown_test_sequences = ['notredame']
 # defines list of transformations applied to input patches
 
 
-def create_train_loader(cfg, sequences):
+def create_train_loader(cfg):
 
     kwargs = {
         'num_workers': cfg.TRAINING.NUM_WORKERS,
@@ -100,7 +99,7 @@ def create_train_loader(cfg, sequences):
     return train_loader
 
 
-def create_test_loaders(padTo):
+def create_test_loaders(cfg):
 
     kwargs = {
         'num_workers': cfg.TRAINING.NUM_WORKERS,
@@ -133,6 +132,7 @@ def train(cfg,
           epoch,
           device,
           logger,
+          file_logger,
           best_fpr_val=100):
     # switch to train mode
     model.train()
@@ -201,8 +201,8 @@ def train(cfg,
 
             for data_loader in val_loaders:
                 # get FPR at TPR 95% on validation data
-                fpr_val_ = test(cfg, data_loader['dataloader'], model, augm,
-                                epoch, logger, data_loader['name'])
+                fpr_val_ = test(cfg, data_loader['dataloader'], model, device,
+                                epoch, logger, file_logger, data_loader['name'])
                 if fpr_val_ < best_fpr_val:
                     best_fpr_val = fpr_val_
                     print('saving best model with val fpr: {}'.format(
@@ -289,7 +289,7 @@ def filter_orientation(out_a, out_p, label, theta_a, theta_p, orientCorrect,
 # function to test the network
 
 
-def test(cfg, test_loader, model, augm, epoch, logger, logger_test_name):
+def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_test_name):
     # switch to evaluate mode
     model.eval()
     labels, distances = [], []
@@ -430,94 +430,15 @@ def create_optimizer(cfg, model):
     return optimizer
 
 
-def main(cfg, model, device, logger, file_logger):
-    # print the experiment configuration
-    print('\nparsed options:\n{}\n'.format(cfg))
-
-    model.to(device)  # place model on device
-    augm = Augmentor(cfg, device)
-
-    # set up optimizer for the model
-    optimizer1 = create_optimizer(cfg, model)
-
-    if cfg.TRAINING.RESUME:
-        if os.path.isfile(cfg.TRAINING.RESUME):
-            print('=> loading checkpoint {}'.format(cfg.TRAINING.RESUME))
-            checkpoint = torch.load(cfg.TRAINING.RESUME)
-            cfg.TRAINING.START_EPOCH = checkpoint['epoch']
-            start = cfg.TRAINING.START_EPOCH
-            end = cfg.TRAINING.EPOCHS
-
-            checkpoint = torch.load(cfg.TRAINING.RESUME)
-            model.load_state_dict(checkpoint['state_dict'])
-
-            path_to_optimizer = cfg.TRAINING.RESUME.replace(
-                'model_checkpoint', 'optimizer_checkpoint')
-            print('Path to the checkpoint of optimizer:', path_to_optimizer)
-            optimizer1.load_state_dict(
-                torch.load(path_to_optimizer)['optimizer'])
-
-        else:
-            print('=> no checkpoint found at {}'.format(cfg.TRAINING.RESUME))
-    else:
-        start = cfg.TRAINING.START_EPOCH
-        end = start + cfg.TRAINING.EPOCHS
-
-    # create training data set
-    train_loader = create_train_loader(cfg, train_sequences)
-    # create testing data sets
-    val_loaders, test_loaders = create_test_loaders(cfg.TRAINING.PAD_TO)
-
-    # val_loaders[0]["dataloader"].dataset.validation_keypoints = train_loader.dataset.validation_keypoints
-    # val_loaders[0]["dataloader"].dataset.validation_background_filenames = train_loader.dataset.validation_background_filenames
-
-    best_fpr_val = 100  # initial value of best FPR
-
-    # train the network for a given epoch interval
-    for epoch in range(start, end):
-
-        # if epoch > start:
-
-            # get new training pairs at the start of each epoch
-            # train_loader.dataset.get_pairs(train_sequences)
-
-        torch.cuda.empty_cache()
-        # train the network on the current epoch's data
-        best_fpr_val = train(cfg, train_loader, val_loaders, test_loaders,
-                             model, augm, optimizer1, epoch, device, logger,
-                             best_fpr_val)
-        torch.cuda.empty_cache()
-
-
-def create_logging_directories(cfg):
-
-    # add experiment name to path
-    cfg.LOGGING.LOG_DIR = os.path.join(cfg.LOGGING.LOG_DIR,
-                                       cfg.TRAINING.EXPERIMENT_NAME)
-    cfg.LOGGING.MODEL_DIR = os.path.join(cfg.LOGGING.MODEL_DIR,
-                                         cfg.TRAINING.EXPERIMENT_NAME)
-    cfg.LOGGING.IMGS_DIR = os.path.join(cfg.LOGGING.IMGS_DIR,
-                                        cfg.TRAINING.EXPERIMENT_NAME)
-
-    log_directories = [
-        cfg.LOGGING.LOG_DIR, cfg.LOGGING.MODEL_DIR, cfg.LOGGING.IMGS_DIR
-    ]
-
-    for log_dir in log_directories:
-
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-
-    return cfg
-
-
-if __name__ == '__main__':
+def main():
+    from blob_matcher.configs.defaults import _C as cfg
 
     parser = argparse.ArgumentParser(description="HardNet Training")
     config_path = os.path.join(os.getcwd(), "configs", "init.yml")
 
     parser.add_argument("--config_file",
-                        default=config_path,
+                        #default=config_path,
+                        default=None,
                         help="path to config file",
                         type=str)
     parser.add_argument("opts",
@@ -530,7 +451,7 @@ if __name__ == '__main__':
     num_gpus = int(
         os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
 
-    if args.config_file != "":
+    if args.config_file is not None:
         cfg.merge_from_file(args.config_file)
 
     cfg.merge_from_list(args.opts)
@@ -564,4 +485,85 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device)
     model.to(device)
-    main(cfg, model, device, logger, file_logger)
+    # print the experiment configuration
+    print('\nparsed options:\n{}\n'.format(cfg))
+
+    model.to(device)  # place model on device
+    augm = Augmentor(cfg, device)
+
+    # set up optimizer for the model
+    optimizer1 = create_optimizer(cfg, model)
+
+    if cfg.TRAINING.RESUME:
+        if os.path.isfile(cfg.TRAINING.RESUME):
+            print('=> loading checkpoint {}'.format(cfg.TRAINING.RESUME))
+            checkpoint = torch.load(cfg.TRAINING.RESUME)
+            cfg.TRAINING.START_EPOCH = checkpoint['epoch']
+            start = cfg.TRAINING.START_EPOCH
+            end = cfg.TRAINING.EPOCHS
+
+            checkpoint = torch.load(cfg.TRAINING.RESUME)
+            model.load_state_dict(checkpoint['state_dict'])
+
+            path_to_optimizer = cfg.TRAINING.RESUME.replace(
+                'model_checkpoint', 'optimizer_checkpoint')
+            print('Path to the checkpoint of optimizer:', path_to_optimizer)
+            optimizer1.load_state_dict(
+                torch.load(path_to_optimizer)['optimizer'])
+
+        else:
+            print('=> no checkpoint found at {}'.format(cfg.TRAINING.RESUME))
+    else:
+        start = cfg.TRAINING.START_EPOCH
+        end = start + cfg.TRAINING.EPOCHS
+
+    # create training data set
+    train_loader = create_train_loader(cfg)
+    # create testing data sets
+    val_loaders, test_loaders = create_test_loaders(cfg)
+
+    # val_loaders[0]["dataloader"].dataset.validation_keypoints = train_loader.dataset.validation_keypoints
+    # val_loaders[0]["dataloader"].dataset.validation_background_filenames = train_loader.dataset.validation_background_filenames
+
+    best_fpr_val = 100  # initial value of best FPR
+
+    # train the network for a given epoch interval
+    for epoch in range(start, end):
+
+        # if epoch > start:
+
+            # get new training pairs at the start of each epoch
+            # train_loader.dataset.get_pairs(train_sequences)
+
+        torch.cuda.empty_cache()
+        # train the network on the current epoch's data
+        best_fpr_val = train(cfg, train_loader, val_loaders, test_loaders,
+                             model, augm, optimizer1, epoch, device, logger,
+                             file_logger, best_fpr_val)
+        torch.cuda.empty_cache()
+
+
+def create_logging_directories(cfg):
+
+    # add experiment name to path
+    cfg.LOGGING.LOG_DIR = os.path.join(cfg.LOGGING.LOG_DIR,
+                                       cfg.TRAINING.EXPERIMENT_NAME)
+    cfg.LOGGING.MODEL_DIR = os.path.join(cfg.LOGGING.MODEL_DIR,
+                                         cfg.TRAINING.EXPERIMENT_NAME)
+    cfg.LOGGING.IMGS_DIR = os.path.join(cfg.LOGGING.IMGS_DIR,
+                                        cfg.TRAINING.EXPERIMENT_NAME)
+
+    log_directories = [
+        cfg.LOGGING.LOG_DIR, cfg.LOGGING.MODEL_DIR, cfg.LOGGING.IMGS_DIR
+    ]
+
+    for log_dir in log_directories:
+
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+
+    return cfg
+
+
+if __name__ == '__main__':
+    main()

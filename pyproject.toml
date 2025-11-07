@@ -37,4 +37,10 @@ Homepage = "https://github.com/the-sauer/log-polar-descriptors"
 where = ["src"]
 
 [tool.setuptools.package-data]
-blob_matcher = ["data/models/default.pth"]
+blob_matcher = ["data/models/default.pth", "configs/*.yml"]
+
+
+[project.scripts]
+blob-matcher-annotate = "blob_matcher.scripts.annotate:main"
+blob-matcher-generate = "blob_matcher.scripts.generate_dataset:main"
+blob-matcher-train = "blob_matcher.scripts.hardnet:main"
