@@ -1,3 +1,4 @@
+import importlib.resources as resources
 import os
 import sys
 
@@ -44,9 +45,14 @@ def keypoints_to_torch(blob_info):
 
 
 class BlobMatcher:
-    def __init__(self, board_dir, model_path=os.path.join(os.path.dirname(__file__), "../data/models/default.pth"), scale=96):
+    def __init__(self, board_dir, model_path=None, scale=96):
         self.model = HardNet(transform="PTN", coords="log", patch_size=32, scale=scale)
-        self.model.load_state_dict(torch.load(model_path, weights_only=False)["state_dict"])
+        if model_path is not None:
+            weights = torch.load(model_path, weights_only=False)
+        else:
+            with resources.files("blob_matcher").joinpath("data/models/default.pth").open("rb") as f:
+                weights = torch.load(f, weights_only=False)
+        self.model.load_state_dict(weights["state_dict"])
         self.model.eval()
 
         self.boards = []
