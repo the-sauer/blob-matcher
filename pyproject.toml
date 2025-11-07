@@ -36,7 +36,6 @@ Homepage = "https://github.com/the-sauer/log-polar-descriptors"
 [tool.setuptools]
 packages = [
     "blob_matcher",
-    "blob_matcher.modules.generate_dataset",
-    "blob_matcher.modules.hardnet.losses",
-    "blob_matcher.modules.hardnet.models",
+    "blob_matcher.modules",
+    "blob_matcher.modules.hardnet",
 ]
