@@ -384,7 +384,7 @@ def ellipse_to_affine(ellipse) -> torch.Tensor:
     return translation @ rotation @ scale
 
 
-def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=None, pad_with=1.0):
+def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=None, pad_with=1.0, resolution=128):
     """
     Extract a log-polar interpolated patch from an affine patch.
 
@@ -407,68 +407,77 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
         A 2-dim `numpy` Array containing the image data of the patch.
         """
     device = img.device
-    patch_size = cfg.INPUT.IMAGE_SIZE if cfg is not None else 32
+    patch_size = resolution
     PSF = psf if psf is not None else cfg.BLOBINATOR.PATCH_SCALE_FACTOR
-    P = 8 * patch_size
-    B, _, Hs, Ws = img.shape
+    oversampling_factor = 4
+    P = oversampling_factor * patch_size
+    B = A.shape[0]
+    *_, Hs, Ws = img.shape
+    if img.ndim == 3:
+        img = img.unsqueeze(0)
+    A_chunks = A.split(200)
+    outputs = []
+    for A_chunk in A_chunks:
+        # Create normalized grid for output patch
+        y, x = torch.meshgrid(
+            torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+            torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+            indexing='ij'
+        )
+        # Each (x,y) is a location in patch coords, shape (P, P)
+        # We treat x as radial and y as angular dimension
 
-    # Create normalized grid for output patch
-    y, x = torch.meshgrid(
-        torch.linspace(0, 1, P, device=device, dtype=torch.float32),
-        torch.linspace(0, 1, P, device=device, dtype=torch.float32),
-        indexing='ij'
-    )
-    # Each (x,y) is a location in patch coords, shape (P, P)
-    # We treat x as radial and y as angular dimension
+        # Compute log-polar coordinates
+        r = torch.exp(torch.log(torch.tensor(PSF, device=device) / sigma_cutoff) * x) * sigma_cutoff    # [sigma_cutoff, PSF)
+        theta = 2 * math.pi * y                                                                         # [0, 2π)
 
-    # Compute log-polar coordinates
-    r = torch.exp(torch.log(torch.tensor(PSF, device=device) / sigma_cutoff) * x) * sigma_cutoff    # [sigma_cutoff, PSF)
-    theta = 2 * math.pi * y                                                                         # [0, 2π)
+        # Convert to Cartesian coordinates in source patch
+        xs = r * torch.cos(theta)
+        ys = r * torch.sin(theta)
 
-    # Convert to Cartesian coordinates in source patch
-    xs = r * torch.cos(theta)
-    ys = r * torch.sin(theta)
+        # Stack homogeneous coords
+        ones = torch.ones((1,)).expand(xs.size()).to(xs.device)
+        coords = torch.stack([xs, ys, ones], dim=-1).to(A_chunk.device)
+        coords = coords.view(1, P, P, 3)
+        coords = coords.expand(A_chunk.size(0), -1, -1, -1)  # (B, P, P, 3)
 
-    # Stack homogeneous coords
-    ones = torch.ones_like(xs)
-    coords = torch.stack([xs, ys, ones], dim=-1).to(A.device)
-    coords = coords.view(1, P, P, 3)
-    coords = coords.expand(B, -1, -1, -1)  # (B, P, P, 3)
+        # Flatten spatial grid for batch multiplication
+        coords_flat = coords.view(A_chunk.size(0), -1, 3)                     # (B, P*P, 3)
+        # Apply affine transform A to each batch item
+        coords_flat = torch.bmm(coords_flat, A_chunk.transpose(1, 2)) # (B, P*P, 3)
+        # Reshape back
+        coords = coords_flat.view(A_chunk.size(0), P, P, 3)
 
-    # Flatten spatial grid for batch multiplication
-    coords_flat = coords.view(B, -1, 3)                     # (B, P*P, 3)
-    # Apply affine transform A to each batch item
-    coords_flat = torch.bmm(coords_flat, A.transpose(1, 2)) # (B, P*P, 3)
-    # Reshape back
-    coords = coords_flat.view(B, P, P, 3)
+        x_src, y_src = coords[..., 0], coords[..., 1]
 
-    x_src, y_src = coords[..., 0], coords[..., 1]
+        # Normalize coordinates to [-1, 1] for grid_sample
+        x_norm = 2 * (x_src / (Ws - 1)) - 1
+        y_norm = 2 * (y_src / (Hs - 1)) - 1
+        grid = torch.stack([x_norm, y_norm], dim=-1)  # (B, P, P, 2)
 
-    # Normalize coordinates to [-1, 1] for grid_sample
-    x_norm = 2 * (x_src / (Ws - 1)) - 1
-    y_norm = 2 * (y_src / (Hs - 1)) - 1
-    grid = torch.stack([x_norm, y_norm], dim=-1)  # (B, P, P, 2)
+        # Sample the image
+        warped = torch.nn.functional.grid_sample(
+            img.expand(grid.size(0), -1, -1, -1),
+            grid,
+            mode='bilinear',
+            padding_mode='zeros',  # outside = 0
+            align_corners=True
+        )
 
-    # Sample the image
-    warped = torch.nn.functional.grid_sample(
-        img, grid,
-        mode='bilinear',
-        padding_mode='zeros',  # outside = 0
-        align_corners=True
-    )
+        # Blend with constant background
+        mask = torch.nn.functional.grid_sample(
+            torch.ones((1, 1, 1, 1), device=device).expand(grid.size(0), 1, Hs, Ws),
+            grid,
+            mode='nearest',
+            padding_mode='zeros',
+            align_corners=True
+        )
 
-    # Blend with constant background
-    mask = torch.nn.functional.grid_sample(
-        torch.ones((1, 1, 1, 1), device=device).expand(B, 1, Hs, Ws),
-        grid,
-        mode='nearest',
-        padding_mode='zeros',
-        align_corners=True
-    )
-
-    background = torch.full_like(warped, pad_with)
-    output = warped* mask + background * (1 - mask)
-    output = torch.nn.functional.avg_pool2d(output, (8, 8))
+        background = torch.full_like(warped, pad_with)
+        output = warped * mask + background * (1 - mask)
+        output = torch.nn.functional.avg_pool2d(output, (oversampling_factor, oversampling_factor))
+        outputs.append(output)
+    output = torch.cat(outputs)
     assert output.shape[2] == patch_size and output.shape[3] == patch_size
     return output
 
@@ -592,7 +601,7 @@ def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography
         positive_transforms = torch.stack(list(map(ellipse_to_affine, positive_keypoints))).to(device)
         garbage_transforms = torch.stack(list(map(ellipse_to_affine, garbage_keypoints))).to(device)
 
-        for psf in [4, 8, 16, 32, 64, 96, 128]:
+        for psf in [64, 96, 128]:
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "positives"), exist_ok=True)
             os.makedirs(os.path.join(path, "patches", f"{int(psf)}", "garbage"), exist_ok=True)
@@ -605,7 +614,7 @@ def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography
                 false_anchor_indices = false_anchor_map[:, false_anchor_map[0].argsort()]
                 false_anchor_tranforms = anchor_transforms[false_anchor_indices[1, :].to(int)]
                 false_anchor_patches = get_patch(
-                    blobboard.unsqueeze(0).expand(false_anchor_tranforms.size(0), -1, -1, -1),
+                    blobboard,
                     false_anchor_tranforms,
                     cfg,
                     sigma_cutoff=sigma_cutoff,
@@ -618,21 +627,21 @@ def generate_dataset(cfg, path, backgrounds, boards, image_transform, homography
                     )
 
             anchor_patches = get_patch(
-                blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1),
+                blobboard,
                 anchor_transforms,
                 cfg,
                 sigma_cutoff=sigma_cutoff,
                 psf=psf
             )
             positive_patches = get_patch(
-                warped_image.expand(positive_transforms.size(0), -1, -1, -1),
+                warped_image,
                 positive_transforms,
                 cfg,
                 sigma_cutoff=sigma_cutoff,
                 psf=psf
             )
             garbage_patches = get_patch(
-                img.unsqueeze(0).expand(garbage_transforms.size(0), -1, -1, -1),
+                img,
                 garbage_transforms,
                 cfg,
                 psf=psf
@@ -770,7 +779,7 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
         positive_transforms = torch.stack(list(map(ellipse_to_affine, positive_keypoints))).to(device)
         garbage_transforms = torch.stack(list(map(ellipse_to_affine, garbage_keypoints))).to(device)
 
-        for psf in [4, 8, 16, 32, 64, 96, 128]:
+        for psf in [64, 96, 128]:
             os.makedirs(os.path.join(path, subdir, "patches", f"{int(psf)}", "anchors"), exist_ok=True)
             os.makedirs(os.path.join(path, subdir, "patches", f"{int(psf)}", "positives"), exist_ok=True)
             os.makedirs(os.path.join(path, subdir, "patches", f"{int(psf)}", "garbage"), exist_ok=True)
@@ -784,7 +793,7 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
                 false_anchor_indices = false_anchor_map[:, false_anchor_map[0].argsort()]
                 false_anchor_tranforms = anchor_transforms[false_anchor_indices[1, :].to(int)]
                 false_anchor_patches = get_patch(
-                    blobboard.unsqueeze(0).expand(false_anchor_tranforms.size(0), -1, -1, -1),
+                    blobboard,
                     false_anchor_tranforms,
                     cfg,
                     sigma_cutoff=sigma_cutoff,
@@ -797,21 +806,21 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
                     )
 
             anchor_patches = get_patch(
-                blobboard.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1),
+                blobboard,
                 anchor_transforms,
                 cfg,
                 sigma_cutoff=sigma_cutoff,
                 psf=psf
             )
             positive_patches = get_patch(
-                img.expand(positive_transforms.size(0), -1, -1, -1),
+                img,
                 positive_transforms,
                 cfg,
                 sigma_cutoff=sigma_cutoff,
                 psf=psf
             )
             garbage_patches = get_patch(
-                img.unsqueeze(0).expand(garbage_transforms.size(0), -1, -1, -1),
+                img,
                 garbage_transforms,
                 cfg,
                 psf=psf
@@ -834,7 +843,7 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
 
 def main():
     sys.path.insert(0, os.getcwd())
-    from configs.defaults import _C as cfg
+    from blob_matcher.configs.defaults import _C as cfg
 
     config_path = os.path.join(os.getcwd(), "configs", "init.yml")
     argument_parser = argparse.ArgumentParser()
@@ -864,8 +873,8 @@ def main():
     )
     args = argument_parser.parse_args()
 
-    if args.config_file != "":
-        cfg.merge_from_file(args.config_file)
+    # if args.config_file != "":
+    #     cfg.merge_from_file(args.config_file)
 
     cfg.merge_from_list(args.opts)
 
@@ -879,7 +888,7 @@ def main():
     # np.random.seed(cfg.TRAINING.SEED)
 
     generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
-    return
+
     validation_split = 0.2
 
     boards = []

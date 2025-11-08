@@ -972,6 +972,8 @@ class BlobinatorTrainingData(Dataset):
     def __init__(self, cfg, path):
         self.cfg = cfg
         self.path = path
+        patch_size = self.cfg.INPUT.IMAGE_SIZE
+        self.resize = torchvision.transforms.Resize((patch_size, patch_size))
 
         self.patch_paths = os.listdir(os.path.join(path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives"))
         # random.shuffle(self.path_paths)
@@ -984,10 +986,10 @@ class BlobinatorTrainingData(Dataset):
         filename = self.patch_paths[idx]
         match = self.positive_path_regex.search(os.path.basename(filename))
         board_idx, blob_idx = match.group(1), match.group(2)
-        positive_patch = torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives", filename), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
-        anchor_patch = torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "anchors", f"{board_idx}_{blob_idx}.png"), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+        positive_patch = self.resize(torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives", filename), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
+        anchor_patch = self.resize(torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "anchors", f"{board_idx}_{blob_idx}.png"), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
         try:
-            garbage_patch = torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "garbage", f"{board_idx}_{blob_idx}.png"), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+            garbage_patch = self.resize(torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "garbage", f"{board_idx}_{blob_idx}.png"), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
             garbage_available = True
         except FileNotFoundError:
             garbage_patch = torch.zeros(1, 32, 32)
@@ -1001,10 +1003,11 @@ class BlobinatorValidationData(Dataset):
         self.cfg = cfg
         self.path = path
 
-        self.patch_paths = os.listdir(os.path.join(path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives"))
-        # random.shuffle(self.path_paths)
-        self.positive_path_regex = re.compile("(\\d+)_(\\d+).png")
+        patch_size = self.cfg.INPUT.IMAGE_SIZE
+        self.resize = torchvision.transforms.Resize((patch_size, patch_size))
 
+        self.patch_paths = os.listdir(os.path.join(path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives"))
+        self.positive_path_regex = re.compile("(\\d+)_(\\d+).png")
 
     def __len__(self):
         return len(self.patch_paths) * 2
@@ -1013,10 +1016,10 @@ class BlobinatorValidationData(Dataset):
         filename = self.patch_paths[idx // 2]
         match = self.positive_path_regex.search(filename)
         board_idx, blob_idx = match.group(1), match.group(2)
-        positive_patch = torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives", filename), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+        positive_patch = self.resize(torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives", filename), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
         if idx % 2 == 0:
-            anchor_patch = torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "anchors", f"{board_idx}_{blob_idx}.png")), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+            anchor_patch = self.resize(torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "anchors", f"{board_idx}_{blob_idx}.png")), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
             return positive_patch, anchor_patch, 1
         else:
-            anchor_patch = torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "false_anchors", filename)), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255
+            anchor_patch = self.resize(torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "false_anchors", filename)), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
             return positive_patch, anchor_patch, 0
