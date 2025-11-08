@@ -46,7 +46,10 @@ class BlobMatcher:
             assert board_files[i][:-4] == board_files[i+1][:-3]
             blob_meta = read_json(os.path.join(board_dir, board_files[i]))
             if board_files[i+1].endswith("png"):
-                blob_image = torchvision.io.decode_image(os.path.join(board_dir, board_files[i+1])).to(torch.float32) / 255
+                blob_image = torchvision.io.decode_image(
+                    os.path.join(board_dir, board_files[i+1]),
+                    torchvision.io.ImageReadMode.GRAY
+                ).to(torch.float32) / 255
             elif board_files[i+1].endswith("pdf"):
                 blob_image = torchvision.transforms.functional.pil_to_tensor(pdf2image.convert_from_path(
                     os.path.join(board_dir, board_files[i+1]),
