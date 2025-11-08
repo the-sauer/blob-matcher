@@ -8,7 +8,13 @@ import torch
 import torchvision
 
 
-from blob_matcher.scripts.generate_dataset import ellipse_to_affine, get_patch, physical_to_logical_coordinates, physical_to_logical_distance, read_json
+from blob_matcher.scripts.generate_dataset import (
+    ellipse_to_affine,
+    get_patch,
+    physical_to_logical_coordinates,
+    physical_to_logical_distance,
+    read_json
+)
 from blob_matcher.modules.hardnet.losses import distance_matrix_vector
 from blob_matcher.modules.hardnet.models import HardNet
 
@@ -25,9 +31,11 @@ class BlobMatcher:
         Initialize the `BlobMatcher`.
 
         Arguments:
-            board_dir: A path to a directory containing BlobBoards. Note that it must contain the pdf or png file and the json for each BlobBoard, nothing else.
+            board_dir: A path to a directory containing BlobBoards. Note that it must contain the pdf or png file and
+                the json for each BlobBoard, nothing else.
             model_path: Optional path to the Model used for description.
-            scale: The scale of the patches. Remember to use an appropriate model when changing the scale. The default model supports a scale of 96.
+            scale: The scale of the patches. Remember to use an appropriate model when changing the scale. The default
+                model supports a scale of 96.
         """
         self.model = HardNet(transform="PTN", coords="log", patch_size=32, scale=scale)
         if model_path is not None:
@@ -38,8 +46,8 @@ class BlobMatcher:
         self.model.load_state_dict(weights["state_dict"])
         self.model.eval()
 
-        self.boards = []
-        blob_descriptors = []
+        self.boards: list[tuple[typing.Optional[int], float, int]] = []
+        blob_descriptors: list[torch.Tensor] = []
         board_files = os.listdir(board_dir)
         board_files.sort()
         for i in range(0, len(board_files), 2):
@@ -57,22 +65,39 @@ class BlobMatcher:
                     grayscale=True
                 )[0]).to(torch.float32) / 255
             keypoints = self._keypoints_to_torch(blob_meta)
-            anchor_transforms = torch.stack(list(map(ellipse_to_affine, map(lambda k: (k[:2], (k[2], k[2]), 0), keypoints))))
-            anchor_patches = get_patch(blob_image.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1), anchor_transforms, cfg=None, psf=scale)
+            anchor_transforms = torch.stack(list(map(
+                ellipse_to_affine,
+                map(lambda k: (k[:2], (k[2], k[2]), 0), keypoints)
+            )))
+            anchor_patches = get_patch(
+                blob_image.unsqueeze(0).expand(anchor_transforms.size(0), -1, -1, -1),
+                anchor_transforms,
+                cfg=None,
+                psf=scale
+            )
             blob_descriptors.extend(map(lambda batch: self.model(batch)[0], anchor_patches.split(200)))
-            self.boards.append((blob_meta["preamble"]["pattern_config"]["seed"], len(blob_meta["blobs"])))
+            self.boards.append((
+                int(blob_meta["hashes"]["config"]) if "hashes" in blob_meta else None,
+                float(blob_meta["preamble"]["pattern_config"]["seed"]),
+                len(blob_meta["blobs"])
+            ))
         self.blob_descriptors = torch.concat(blob_descriptors)
 
-    def query(self, patches: torch.Tensor, k: int = 1):
+    def query(self, patches: torch.Tensor, k: int = 1) -> list[list[tuple[int, float, int]]]:
         """
         Query a sequence of patches for their nearest neighbours in the reference boards.
 
         Arguments:
-            patches: A `pytorch.Tensor` with size either (B, 1, P, P) or (1, P, P) containing the image data of the patches normalized between [0, 1].
+            patches: A `torch.Tensor` with size either (B, 1, P, P) or (1, P, P) containing the image data of the
+                patches normalized between [0, 1].
             k: number of nearest neighbours returned for each patch.
 
         Returns:
-            A list of length B containing for every patch a list of length k with the nearest neigbours in ascending distance. A nearest neighbour is identified by a tuple consisting of the BlobBoard seed and the blob index within the board.
+            A list of length B containing for every patch a list of length k with the nearest neigbours in ascending
+            distance. A nearest neighbour is identified by a tuple consisting of
+            - the BlobBoard config hash,
+            - the BlobBoard seed and
+            - the blob index within the board.
         """
         if patches.ndim == 3:
             patches.unsqueeze(0)
@@ -87,9 +112,9 @@ class BlobMatcher:
 
     def _get_board_and_blob_id(self, index):
         index = int(index)
-        for board_id, num_blobs in self.boards:
+        for board_hash, board_id, num_blobs in self.boards:
             if index < num_blobs:
-                return board_id, index
+                return board_hash, board_id, index
             index -= num_blobs
         return None
 
@@ -119,17 +144,34 @@ class BlobMatcher:
             (blob_info["preamble"]["board_config"]["canvas_size"]["height"]["value"]
                 - blob_info["preamble"]["board_config"]["board_size"]["height"]["value"]) / 2,
         )
-        return torch.stack(list(map(self._keypoint_to_torch(resolution, border_width, canvas_offset), blob_info["blobs"])))
+        return torch.stack(list(map(
+            self._keypoint_to_torch(resolution, border_width, canvas_offset),
+            blob_info["blobs"])
+        ))
+
+
+def main():
+    path_to_boards = "./data/patterns"
+    path_to_patches = "./data/datasets/2025_11_06/real/training/patches/96/positives"
+    blob_matcher = BlobMatcher(board_dir=os.path.join(os.getcwd(), path_to_boards))
+    patch_paths = list(filter(
+        lambda f: f.startswith("0124"),
+        os.listdir(path_to_patches)
+    ))
+    patch_paths.sort()
+    print(patch_paths)
+    patches = torch.empty((len(patch_paths), 1, 32, 32))
+    for i, p in enumerate(patch_paths):
+        patches[i] = torchvision.io.decode_image(
+            os.path.join(path_to_patches, p),
+            torchvision.io.ImageReadMode.GRAY
+        ).to(torch.float32) / 255
+    for [(board_hash, board_seed, blob_idx)] in blob_matcher.query(patches, k=1):
+        if board_seed == 1.4467754675085926e19:
+            print(f"Correct board {blob_idx} {board_hash}")
+        else:
+            print("Incorrect board {board_hash}")
 
 
 if __name__ == "__main__":
-    blob_matcher = BlobMatcher(board_dir=os.path.join(os.getcwd(), "data/real_image_data/2025_11_05/boards"))
-    patch_paths = os.listdir("./data/datasets/new/real/validation/patches/96/positives")[:10]
-    print(patch_paths)
-    patches = torch.empty((10, 1, 32, 32))
-    for i in range(10):
-        patches[i] = torchvision.io.decode_image(
-            os.path.join("./data/datasets/new/real/validation/patches/96/positives", patch_paths[i]),
-            torchvision.io.ImageReadMode.GRAY
-        ).to(torch.float32) / 255
-    print(blob_matcher.query(patches, k=3))
+    main()
