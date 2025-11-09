@@ -77,7 +77,7 @@ class HardNet(nn.Module):
         elif patch_size == 128:
             kernel_size = 9
             padding = 4
-            pool = 16
+            pool = 32
         else:
             raise ValueError(f"Unsupported patch size {patch_size}")
 
@@ -94,7 +94,7 @@ class HardNet(nn.Module):
             nn.Conv2d(64, 64, kernel_size=kernel_size, padding=padding, bias=False),            # 16x16
             nn.BatchNorm2d(64, affine=False),
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=kernel_size, stride=padding, padding=padding, bias=False), # 8x8
+            nn.Conv2d(64, 128, kernel_size=kernel_size, stride=2, padding=padding, bias=False), # 8x8
             nn.BatchNorm2d(128, affine=False),
             nn.ReLU(),
             nn.Conv2d(128, 128, kernel_size=kernel_size, padding=padding, bias=False),          # 8x8
@@ -102,7 +102,7 @@ class HardNet(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.MaxPool2d(kernel_size=(pool, 1)),
-            nn.Conv2d(128, 128, (1, pool)),
+            nn.Conv2d(128, 128, (1, pool), bias=False),
             nn.BatchNorm2d(128, affine=False),
         )
 
