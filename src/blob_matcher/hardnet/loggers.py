@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tensorboard_logger import configure, log_value
 import os
 
 

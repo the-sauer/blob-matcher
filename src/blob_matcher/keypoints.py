@@ -71,16 +71,14 @@ def conic_to_ellipse(conic) -> typing.Optional[tuple[torch.Tensor, tuple[float, 
     Extracts ellipse parameters from a conic section.
 
     Arguments:
-        conic: A (3,3) array with the conic section.
+        conic: A (3, 3) array with the conic section.
 
     Returns:
         A tuple consisting of
             - a 2 entry tensor with the location,
             - a tuple containing the semi-major axis and the semi-minor axis, and
             - the angle of the semi-major axis in radians.
-
-    Raises:
-        AssertionError: When the conic does not represent a valid ellipse.
+        Or `None` if the conic does not represent a valid homography.
     """
     location = -torch.linalg.inv(conic[:2, :2] * 2) @ (conic[:2, 2] * 2)
     A = conic[0, 0].item()
@@ -150,15 +148,23 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
     """
     Extract log-polar interpolated patches from an image given an affine transform of the base patch.
 
-    The method used to extract the patch is now described in more detail. Given patch coordinates $(x,y)$ with
-    $0 \\leq x, y < P$ for a given patch size $P$ we first normalize them into the half-open interval $[0,1)$:
-    $\\overline{x} = \\frac{x}{P}, \\overline{x} = \\frac{x}{P}$. We set $x$ to be the radial dimension and $y$ to
-    be the angular dimension of the patch. We can obtain the log-polar coordinates by:
-    $$r = e^{\\ln(PSF) \\cdot \\overline{x}}$$
+    The method used to extract the patch is now described in more detail. Given patch coordinates :math:`(x,y)` with
+    :math:`0 \\leq x, y < P` for a given patch size :math:`P` we first normalize them into the half-open interval
+    :math:`[0,1)`, which leaves us with :math:`\\overline{x} = \\frac{x}{P}, \\overline{x} = \\frac{x}{P}`. We set
+    :math:`x` to be the radial dimension and :math:`y` to be the angular dimension of the patch. We can obtain the
+    log-polar coordinates by:
+
+    .. math::
+        r = e^{\\ln(\\lambda/\\sigma_{cutoff}) \\cdot \\overline{x}} \\sigma_{cutoff}
+
     and
-    $$\\theta = 2 \\cdot \\pi \\cdot \\overline{x}$$
-    where $PSF$ is the *Patch-Scale-Factor*, a configuration value that controls the size of the patch in relation
-    to the radius of the blob. Note that $r \\in [1, PSF)$ and $\\theta \\in [0, 2\\pi)$.
+
+    .. math::
+        \\theta = 2 \\cdot \\pi \\cdot \\overline{x}
+
+    where :math:`\\lambda` is the size of the support-region, a configuration value that controls the size of the patch
+    in relation to the radius :math:`\\sigma` of the blob. Note that :math:`r \\in [\\sigma_{cutoff}, \\lambda
+    \\sigma_{cutoff})` and :math:`\\theta \\in [0, 2\\pi)`.
 
     Arguments:
         img: The source image. This can be a single (C, H, W) image or a batch (B, C, H, W) of images.
@@ -167,7 +173,7 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
 
     Returns:
         A (B, P, P) tensor containing the image data of the patches.
-        """
+    """
     device = img.device
     patch_size = resolution
     PSF = psf if psf is not None else cfg.BLOBINATOR.PATCH_SCALE_FACTOR

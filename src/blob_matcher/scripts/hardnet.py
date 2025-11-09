@@ -16,12 +16,13 @@ This is HardNet local patch descriptor. The training code is based on PyTorch TF
 https://github.com/edgarriba/examples/tree/master/triplet
 by Edgar Riba.
 
-If you use this code, please cite
-@article{HardNet2017,
- author = {Anastasiya Mishchuk, Dmytro Mishkin, Filip Radenovic, Jiri Matas},
-    title = "{Working hard to know your neighbor's margins:Local descriptor learning loss}",
-     year = 2017}
-(c) 2017 by Anastasiia Mishchuk, Dmytro Mishkin
+If you use this code, please cite ::
+
+    @article{HardNet2017,
+    author = {Anastasiya Mishchuk, Dmytro Mishkin, Filip Radenovic, Jiri Matas},
+        title = "{Working hard to know your neighbor's margins:Local descriptor learning loss}",
+        year = 2017}
+    (c) 2017 by Anastasiia Mishchuk, Dmytro Mishkin
 """
 
 from __future__ import division, print_function

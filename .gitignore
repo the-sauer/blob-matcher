@@ -220,3 +220,6 @@ data
 *.pt[h]
 
 .DS_Store
+
+docs/blob_matcher*.rst
+docs/generated/

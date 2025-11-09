@@ -110,18 +110,16 @@ def map_blobs(
     background: torch.Tensor,
     homography: torch.Tensor,
     blobs: torch.Tensor,
-    cfg,
     blob_alpha=1.0,
 ) -> torch.Tensor:
     """
     Warps the blobsheet into the background according to a homography.
 
-    The blobboard is taken from `self`.
-
-    Argsument:
+    Arguments:
         background: A 2-D array containing the image data for the background.
-        homography: A valid homography with shape (3,3) that describes the transformation from the blobboard into
+        homography: A valid homography with shape (3, 3) that describes the transformation from the blobboard into
         the image.
+        blobs: The blobboard to be mapped.
 
     Returns:
         An image with the blobsheet mapped in front of a background.
@@ -212,7 +210,7 @@ def generate_dataset(
             / 255
         )
         warped_image = map_blobs(
-            img.unsqueeze(0), homographies[i].unsqueeze(0), blobboard.unsqueeze(0), cfg
+            img.unsqueeze(0), homographies[i].unsqueeze(0), blobboard.unsqueeze(0)
         )
         warped_image = image_transform(warped_image)
         torchvision.utils.save_image(
@@ -506,7 +504,6 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
                 .to(device)
                 .unsqueeze(0),
                 blobboard.unsqueeze(0),
-                cfg,
                 blob_alpha=0.5,
             ),
             os.path.join(path, subdir, "warped_images", f"{i:04}.png"),
