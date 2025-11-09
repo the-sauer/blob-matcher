@@ -1,4 +1,4 @@
-# Copyright 2019 EPFL, Google LLC
+# Copyright 2025 Hendrik Sauer
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,3 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+import json
+
+
+def read_json(path):
+    with open(path, encoding="UTF-8") as f:
+        return json.loads(f.read())

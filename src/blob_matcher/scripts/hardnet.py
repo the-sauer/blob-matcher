@@ -28,22 +28,19 @@ from __future__ import division, print_function
 
 import sys
 import os
-sys.path.insert(0, os.getcwd())
+sys.path.insert(0, os.getcwd()) 
 
-from blob_matcher.modules.ptn.pytorch.data import transformerData, \
-    transformerValTestData, \
-    TripletPhotoTour, \
-    Augmentor, \
+from blob_matcher.hardnet.data import Augmentor, \
     BlobinatorTrainingData, \
     BlobinatorValidationData
 # from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
-from blob_matcher.modules.hardnet.loggers import Logger, FileLogger
-from blob_matcher.modules.hardnet.losses import loss_HardNet_weighted
-from blob_matcher.modules.hardnet.models import HardNet
+from blob_matcher.hardnet.loggers import FileLogger
+from blob_matcher.hardnet.losses import loss_HardNet_weighted
+from blob_matcher.hardnet.models import HardNet
 from torch.utils.data import Dataset
-from blob_matcher.modules.hardnet.utils import show_images
-from blob_matcher.modules.hardnet.utils import cv2_scale, np_reshape, np_reshape64
-from blob_matcher.modules.hardnet.eval_metrics import ErrorRateAt95Recall
+from blob_matcher.hardnet.utils import show_images
+from blob_matcher.hardnet.utils import cv2_scale, np_reshape, np_reshape64
+from blob_matcher.hardnet.eval_metrics import ErrorRateAt95Recall
 import random
 import argparse
 import numpy as np
@@ -188,7 +185,7 @@ def train(cfg,
 
         # logging
         if batch_idx % cfg.LOGGING.LOG_INTERVAL == 0:
-            logger.log_value('loss', loss.item()).step()
+            #logger.log_value('loss', loss.item()).step()
 
             pbar.set_description(
                 'Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
@@ -386,7 +383,7 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
         logger_test_name, fpr95))
 
     if (cfg.LOGGING.ENABLE_LOGGING):
-        logger.log_value(logger_test_name + ' fpr95', fpr95)
+        #logger.log_value(logger_test_name + ' fpr95', fpr95)
         file_logger.log_string(
             'stats.txt',
             'Epoch: {},  Dataset:{}, FPR: {} '.format(epoch, logger_test_name,
@@ -468,16 +465,11 @@ def main():
     torch.manual_seed(cfg.TRAINING.SEED)
     np.random.seed(cfg.TRAINING.SEED)
 
-    model = HardNet(transform=cfg.TRAINING.TRANSFORMER,
-                    coords=cfg.TRAINING.COORDS,
-                    patch_size=cfg.TRAINING.IMAGE_SIZE,
-                    scale=cfg.TRAINING.SCALE,
-                    #is_desc256=cfg.TRAINING.IS_DESC_256,
-                    orientCorrect=cfg.TRAINING.ORIENT_CORRECTION)
+    model = HardNet(patch_size=cfg.TRAINING.IMAGE_SIZE)
     logger, file_logger = None, None
 
     if cfg.LOGGING.ENABLE_LOGGING:
-        logger = Logger(cfg.LOGGING.LOG_DIR)
+        logger = None
         file_logger = FileLogger(cfg.LOGGING.LOG_DIR)
         file_logger.log_string('cfg.txt', str(cfg))
 

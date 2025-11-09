@@ -2,6 +2,7 @@
 requires = ["setuptools >= 77.0.3"]
 build-backend = "setuptools.build_meta"
 
+
 [project]
 name = "blob-matcher"
 version = "0.0.3"
@@ -10,7 +11,7 @@ authors = [
 ]
 description = "Feature Matcher for the BlobBoards"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
@@ -30,17 +31,18 @@ dependencies = [
     "yacs >= 0.1.8",
 ]
 
+[project.scripts]
+blob-matcher-annotate = "blob_matcher.scripts.annotate:main"
+blob-matcher-evaluate = "blob_matcher.scripts.evaluate_matching:main"
+blob-matcher-generate = "blob_matcher.scripts.generate_dataset:main"
+blob-matcher-train = "blob_matcher.scripts.hardnet:main"
+
 [project.urls]
 Homepage = "https://github.com/the-sauer/log-polar-descriptors"
+
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 blob_matcher = ["data/models/default.pth", "configs/*.yml"]
-
-
-[project.scripts]
-blob-matcher-annotate = "blob_matcher.scripts.annotate:main"
-blob-matcher-generate = "blob_matcher.scripts.generate_dataset:main"
-blob-matcher-train = "blob_matcher.scripts.hardnet:main"
