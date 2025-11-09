@@ -1,5 +1,10 @@
 # blob-matcher
 
+[![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](./LICENSE)
+[![Framework](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?logo=PyTorch&logoColor=white)](https://pytorch.org/)
+[![GitHub Repo](https://img.shields.io/badge/GitHub-blob--matcher-black?logo=github)](https://github.com/the-sauer/blob-matcher)
+
 This repository contains the *BlobMatcher* feature matching module for *BlobBoards*.
 
 ## Usage
