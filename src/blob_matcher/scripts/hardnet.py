@@ -461,6 +461,10 @@ def main():
         torch.cuda.manual_seed_all(cfg.TRAINING.SEED)
         torch.backends.cudnn.deterministic = True
 
+    run_training(cfg)
+
+
+def run_training(cfg):
     # set random seeds
     random.seed(cfg.TRAINING.SEED)
     torch.manual_seed(cfg.TRAINING.SEED)

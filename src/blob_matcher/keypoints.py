@@ -144,7 +144,7 @@ def ellipse_to_affine(ellipse) -> torch.Tensor:
     return translation @ rotation @ scale
 
 
-def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=None, pad_with=1.0, resolution=128):
+def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=None, pad_with=1.0, resolution=128, batch_size=400):
     """
     Extract log-polar interpolated patches from an image given an affine transform of the base patch.
 
@@ -174,79 +174,84 @@ def get_patch(img: torch.Tensor, A: torch.Tensor, cfg, sigma_cutoff=1.0, psf=Non
     Returns:
         A (B, P, P) tensor containing the image data of the patches.
     """
-    device = img.device
-    patch_size = resolution
-    PSF = psf if psf is not None else cfg.BLOBINATOR.PATCH_SCALE_FACTOR
-    oversampling_factor = 4
-    P = oversampling_factor * patch_size
-    *_, Hs, Ws = img.shape
-    if img.ndim == 3:
-        img = img.unsqueeze(0)
-    A_chunks = A.split(200)
-    outputs = []
-    for A_chunk in A_chunks:
-        # Create normalized grid for output patch
-        y, x = torch.meshgrid(
-            torch.linspace(0, 1, P, device=device, dtype=torch.float32),
-            torch.linspace(0, 1, P, device=device, dtype=torch.float32),
-            indexing='ij'
-        )
-        # Each (x,y) is a location in patch coords, shape (P, P)
-        # We treat x as radial and y as angular dimension
+    if batch_size < 1:
+        raise ValueError(f"get_patch cannot work with {batch_size=}")
+    try:
+        device = img.device
+        patch_size = resolution
+        PSF = psf if psf is not None else cfg.BLOBINATOR.PATCH_SCALE_FACTOR
+        oversampling_factor = 4
+        P = oversampling_factor * patch_size
+        *_, Hs, Ws = img.shape
+        if img.ndim == 3:
+            img = img.unsqueeze(0)
+        A_chunks = A.split(batch_size)
+        outputs = []
+        for A_chunk in A_chunks:
+            # Create normalized grid for output patch
+            y, x = torch.meshgrid(
+                torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+                torch.linspace(0, 1, P, device=device, dtype=torch.float32),
+                indexing='ij'
+            )
+            # Each (x,y) is a location in patch coords, shape (P, P)
+            # We treat x as radial and y as angular dimension
 
-        # Compute log-polar coordinates
-        r = torch.exp(torch.log(torch.tensor(PSF, device=device) / sigma_cutoff) * x) * sigma_cutoff    # [sigma_cutoff, PSF)
-        theta = 2 * math.pi * y                                                                         # [0, 2π)
+            # Compute log-polar coordinates
+            r = torch.exp(torch.log(torch.tensor(PSF, device=device) / sigma_cutoff) * x) * sigma_cutoff    # [sigma_cutoff, PSF)
+            theta = 2 * math.pi * y                                                                         # [0, 2π)
 
-        # Convert to Cartesian coordinates in source patch
-        xs = r * torch.cos(theta)
-        ys = r * torch.sin(theta)
+            # Convert to Cartesian coordinates in source patch
+            xs = r * torch.cos(theta)
+            ys = r * torch.sin(theta)
 
-        # Stack homogeneous coords
-        ones = torch.ones((1,)).expand(xs.size()).to(xs.device)
-        coords = torch.stack([xs, ys, ones], dim=-1).to(A_chunk.device)
-        coords = coords.view(1, P, P, 3)
-        coords = coords.expand(A_chunk.size(0), -1, -1, -1)             # (B, P, P, 3)
+            # Stack homogeneous coords
+            ones = torch.ones((1,)).expand(xs.size()).to(xs.device)
+            coords = torch.stack([xs, ys, ones], dim=-1).to(A_chunk.device)
+            coords = coords.view(1, P, P, 3)
+            coords = coords.expand(A_chunk.size(0), -1, -1, -1)             # (B, P, P, 3)
 
-        # Flatten spatial grid for batch multiplication
-        coords_flat = coords.view(A_chunk.size(0), -1, 3)               # (B, P*P, 3)
-        # Apply affine transform A to each batch item
-        coords_flat = torch.bmm(coords_flat, A_chunk.transpose(1, 2))   # (B, P*P, 3)
-        # Reshape back
-        coords = coords_flat.view(A_chunk.size(0), P, P, 3)
+            # Flatten spatial grid for batch multiplication
+            coords_flat = coords.view(A_chunk.size(0), -1, 3)               # (B, P*P, 3)
+            # Apply affine transform A to each batch item
+            coords_flat = torch.bmm(coords_flat, A_chunk.transpose(1, 2))   # (B, P*P, 3)
+            # Reshape back
+            coords = coords_flat.view(A_chunk.size(0), P, P, 3)
 
-        x_src, y_src = coords[..., 0], coords[..., 1]
+            x_src, y_src = coords[..., 0], coords[..., 1]
 
-        # Normalize coordinates to [-1, 1] for grid_sample
-        x_norm = 2 * (x_src / (Ws - 1)) - 1
-        y_norm = 2 * (y_src / (Hs - 1)) - 1
-        grid = torch.stack([x_norm, y_norm], dim=-1)  # (B, P, P, 2)
+            # Normalize coordinates to [-1, 1] for grid_sample
+            x_norm = 2 * (x_src / (Ws - 1)) - 1
+            y_norm = 2 * (y_src / (Hs - 1)) - 1
+            grid = torch.stack([x_norm, y_norm], dim=-1)  # (B, P, P, 2)
 
-        # Sample the image
-        warped = torch.nn.functional.grid_sample(
-            img.expand(grid.size(0), -1, -1, -1),
-            grid,
-            mode='bilinear',
-            padding_mode='zeros',  # outside = 0
-            align_corners=True
-        )
+            # Sample the image
+            warped = torch.nn.functional.grid_sample(
+                img.expand(grid.size(0), -1, -1, -1),
+                grid,
+                mode='bilinear',
+                padding_mode='zeros',  # outside = 0
+                align_corners=True
+            )
 
-        # Blend with constant background
-        mask = torch.nn.functional.grid_sample(
-            torch.ones((1, 1, 1, 1), device=device).expand(grid.size(0), 1, Hs, Ws),
-            grid,
-            mode='nearest',
-            padding_mode='zeros',
-            align_corners=True
-        )
+            # Blend with constant background
+            mask = torch.nn.functional.grid_sample(
+                torch.ones((1, 1, 1, 1), device=device).expand(grid.size(0), 1, Hs, Ws),
+                grid,
+                mode='nearest',
+                padding_mode='zeros',
+                align_corners=True
+            )
 
-        background = torch.full_like(warped, pad_with)
-        output = warped * mask + background * (1 - mask)
-        output = torch.nn.functional.avg_pool2d(output, (oversampling_factor, oversampling_factor))
-        outputs.append(output)
-    output = torch.cat(outputs)
-    assert output.shape[2] == patch_size and output.shape[3] == patch_size
-    return output
+            background = torch.full_like(warped, pad_with)
+            output = warped * mask + background * (1 - mask)
+            output = torch.nn.functional.avg_pool2d(output, (oversampling_factor, oversampling_factor))
+            outputs.append(output)
+        output = torch.cat(outputs)
+        assert output.shape[2] == patch_size and output.shape[3] == patch_size
+        return output
+    except torch.OutOfMemoryError:
+        return get_patch(img, A, cfg, sigma_cutoff, psf, pad_with, resolution, batch_size // 2)
 
 
 def keypoint_to_torch(resolution, border_width, canvas_offset):

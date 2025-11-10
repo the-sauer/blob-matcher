@@ -68,27 +68,27 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.
             "scale_aug": 0.05,
         },
     ),
-    # (
-    #     "hard",
-    #     v2.Compose(
-    #         [
-    #             v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5),
-    #             v2.GaussianBlur(kernel_size=(7, 7)),
-    #             v2.GaussianNoise(),
-    #         ]
-    #     ),
-    #     {
-    #         "base_scale": 0.2,
-    #         "scaling_amplitude": 0.1,
-    #         "perspective_amplitude_x": 0.9,
-    #         "perspective_amplitude_y": 0.9,
-    #         "allow_artifacts": True,
-    #     },
-    #     {
-    #         "location_aug": 0.1,
-    #         "scale_aug": 0.1,
-    #     },
-    # ),
+    (
+        "hard",
+        v2.Compose(
+            [
+                v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5),
+                v2.GaussianBlur(kernel_size=(7, 7)),
+                v2.GaussianNoise(),
+            ]
+        ),
+        {
+            "base_scale": 0.2,
+            "scaling_amplitude": 0.1,
+            "perspective_amplitude_x": 0.8,
+            "perspective_amplitude_y": 0.8,
+            "allow_artifacts": True,
+        },
+        {
+            "location_aug": 0.1,
+            "scale_aug": 0.1,
+        },
+    ),
     # (
     #     "very_hard",
     #     v2.Compose([
@@ -714,7 +714,6 @@ def main():
     # torch.manual_seed(cfg.TRAINING.SEED)
     # np.random.seed(cfg.TRAINING.SEED)
 
-    # generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
 
     validation_split = 0.2
 
@@ -733,7 +732,7 @@ def main():
 
     background_filenames: list = fchain(
         list,
-        curry(filter)(curry(flip(str.endswith))(".jpg")),
+        curry(filter)(curry(flip(str.endswith))(".png")),
         curry(reduce)(list.__add__),
         curry(map)(lambda x: list(map(lambda f: os.path.join(x[0], f), x[2]))),
     )(os.walk(os.path.join("./data/backgrounds")))
@@ -756,17 +755,37 @@ def main():
         homography_kwargs,
         augmentation_args,
     ) in enumerate(DATASETS):
+        _training_backgrounds = training_backgrounds[
+            i * (num_training_images // len(DATASETS)):
+            (i + 1) * (num_training_images // len(DATASETS))
+        ]
+        _training_boards = training_boards[
+            i * (num_training_images // len(DATASETS)):
+            (i + 1) * (num_training_images // len(DATASETS))
+        ]
+        _validation_backgrounds = validation_backgrounds[
+            i * (num_validation_images // len(DATASETS)):
+            (i + 1) * (num_validation_images // len(DATASETS))
+        ]
+        _validation_boards = validation_boards[
+            i * (num_validation_images // len(DATASETS)):
+            (i + 1) * (num_validation_images // len(DATASETS))
+        ]
+        os.makedirs(os.path.join("./data/datasets/new", dataset_name, "training"), exist_ok=True)
+        with open(os.path.join("./data/datasets/new", dataset_name, "training/backgrounds.txt"), "x", encoding="utf-8") as f:
+            f.writelines(map(lambda b: b + "\n", _training_backgrounds))
+        with open(os.path.join("./data/datasets/new", dataset_name, "training/boards.txt"), "x", encoding="utf-8") as f:
+            f.writelines(map(lambda b: b[0] + "\n", _training_boards))
+        os.makedirs(os.path.join("./data/datasets/new", dataset_name, "validation"), exist_ok=True)
+        with open(os.path.join("./data/datasets/new", dataset_name, "validation/backgrounds.txt"), "x", encoding="utf-8") as f:
+            f.writelines(map(lambda b: b + "\n", _validation_backgrounds))
+        with open(os.path.join("./data/datasets/new", dataset_name, "validation/boards.txt"), "x", encoding="utf-8") as f:
+            f.writelines(map(lambda b: b[0] + "\n", _validation_boards))
         generate_dataset(
             cfg,
             os.path.join(args.path, dataset_name, "training"),
-            training_backgrounds[
-                i * (num_training_images // len(DATASETS)):
-                (i + 1) * (num_training_images // len(DATASETS))
-            ],
-            training_boards[
-                i * (num_training_images // len(DATASETS)):
-                (i + 1) * (num_training_images // len(DATASETS))
-            ],
+            _training_backgrounds,
+            _training_boards,
             image_transform,
             homography_kwargs,
             augmentation_args,
@@ -775,19 +794,14 @@ def main():
         generate_dataset(
             cfg,
             os.path.join(args.path, dataset_name, "validation"),
-            validation_backgrounds[
-                i * (num_validation_images // len(DATASETS)):
-                (i + 1) * (num_validation_images // len(DATASETS))
-            ],
-            validation_boards[
-                i * (num_validation_images // len(DATASETS)):
-                (i + 1) * (num_validation_images // len(DATASETS))
-            ],
+            _validation_backgrounds,
+            _validation_boards,
             image_transform,
             homography_kwargs,
             augmentation_args,
             is_validation=True,
         )
+    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
 
 
 if __name__ == "__main__":
