@@ -35,22 +35,25 @@ def main():
                         config.TRAINING.BATCH_REDUCE = loss
                         config.TRAINING.OPTIMIZER = optimizer
 
+                        config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_easy"
                         config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/easy"
                         config.BLOBINATOR.EPOCHS = 50
                         run_training(config)
+                        config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_hard"
                         config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/hard"
                         config.BLOBINATOR.EPOCHS = 100
                         config.BLOBINATOR.RESUME_TRAINING = os.path.join(
                             config.TRAINING.MODEL_DIR,
-                            experiment_name,
+                            f"{experiment_name}_easy",
                             "model_checkpoint_49.pth"
                         )
                         run_training(config)
+                        config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_real"
                         config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/real"
                         config.BLOBINATOR.EPOCHS = 300
                         config.BLOBINATOR.RESUME_TRAINING = os.path.join(
                             config.TRAINING.MODEL_DIR,
-                            experiment_name,
+                            f"{experiment_name}_hard",
                             "model_checkpoint_99.pth"
                         )
                         run_training(config)
