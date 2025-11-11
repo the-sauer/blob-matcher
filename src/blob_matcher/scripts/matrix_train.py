@@ -8,9 +8,6 @@ from blob_matcher.scripts.hardnet import run_training
 
 
 def main():
-    with open("completed.txt", "r", encoding="utf-8") as f:
-        completed = f.readlines()
-
     cfg.LOGGING.LOG_DIR = os.path.join('data/logs/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
     cfg.LOGGING.MODEL_DIR = os.path.join('data/models/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
     cfg.LOGGING.IMGS_DIR = os.path.join('data/images/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
@@ -21,8 +18,7 @@ def main():
                 for scale in [96, 128, 64]:
                     for resolution in [32, 64, 128]:
                         experiment_name = f"scale_{scale}_res_{resolution}_br_{batch_reduce}_loss_{loss}_optimizer_{optimizer}"
-                        if experiment_name + "\n" in completed:
-                            continue
+
                         config = copy.deepcopy(cfg)
                         config.TRAINING.EXPERIMENT_NAME = experiment_name
                         config.TRAINING.SCALE = scale
@@ -32,34 +28,40 @@ def main():
                         config.TEST.IMAGE_SIZE = resolution
                         config.TRAINING.IMAGE_SIZE = resolution
                         config.TRAINING.LOSS = loss
-                        config.TRAINING.BATCH_REDUCE = loss
+                        config.TRAINING.BATCH_REDUCE = batch_reduce
                         config.TRAINING.OPTIMIZER = optimizer
 
                         config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_easy"
                         config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/easy"
-                        config.BLOBINATOR.EPOCHS = 50
-                        run_training(config)
-                        config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_hard"
-                        config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/hard"
-                        config.BLOBINATOR.EPOCHS = 100
-                        config.BLOBINATOR.RESUME_TRAINING = os.path.join(
-                            config.TRAINING.MODEL_DIR,
-                            f"{experiment_name}_easy",
-                            "model_checkpoint_49.pth"
-                        )
-                        run_training(config)
-                        config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_real"
-                        config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/real"
-                        config.BLOBINATOR.EPOCHS = 300
-                        config.BLOBINATOR.RESUME_TRAINING = os.path.join(
-                            config.TRAINING.MODEL_DIR,
-                            f"{experiment_name}_hard",
-                            "model_checkpoint_99.pth"
-                        )
-                        run_training(config)
-
-                        with open("completed.txt", "w", encoding="utf-8") as f:
-                            f.write(experiment_name + "\n")
+                        config.TRAINING.EPOCHS = 50
+                        print(f"Running {experiment_name} now")
+                        try:
+                            if not os.path.exists(os.path.join(
+                                config.LOGGING.MODEL_DIR,
+                                f"{experiment_name}_easy",
+                                "model_checkpoint_49.pth"
+                            )):
+                                run_training(config)
+                            config.TEST.EVAL_INTERVAL = 20
+                            config.LOGGING.LOG_DIR = os.path.join('data/logs/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
+                            config.LOGGING.MODEL_DIR = os.path.join('data/models/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
+                            config.LOGGING.IMGS_DIR = os.path.join('data/images/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
+                            config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_real"
+                            config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/real"
+                            config.TRAINING.EPOCHS = 200
+                            config.TRAINING.RESUME = os.path.join(
+                                config.LOGGING.MODEL_DIR,
+                                f"{experiment_name}_easy",
+                                "model_checkpoint_49.pth"
+                            )
+                            if not os.path.exists(os.path.join(
+                                config.TRAINING.MODEL_DIR,
+                                f"{experiment_name}_real",
+                                "model_checkpoint_199.pth"
+                            )):
+                                run_training(config)
+                        except:
+                            continue
 
 
 if __name__ == "__main__":

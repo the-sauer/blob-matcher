@@ -139,18 +139,25 @@ class BlobinatorValidationData(torch.utils.data.Dataset):
             lambda p: self.positive_path_regex.match(p) is not None,
             os.listdir(os.path.join(path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives"))
         ))
+        self.permutation = torch.randperm(len(self.patch_paths) * 3)[
+            :min(len(self.patch_paths) * 3, self.cfg.TEST.MAX_SAMPLES)
+        ]
 
     def __len__(self):
-        return len(self.patch_paths) * 2
+        return len(self.permutation)
 
     def __getitem__(self, idx):
-        filename = self.patch_paths[idx // 2]
+        idx = self.permutation[idx]
+        filename = self.patch_paths[idx // 3]
         match = self.positive_path_regex.search(filename)
         board_idx, blob_idx = match.group(1), match.group(2)
         positive_patch = self.resize(torchvision.io.decode_image(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives", filename), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
-        if idx % 2 == 0:
+        if idx % 3 == 0:
             anchor_patch = self.resize(torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "anchors", f"{board_idx}_{blob_idx}.png")), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
             return positive_patch, anchor_patch, 1
-        else:
+        elif idx % 3 == 1:
             anchor_patch = self.resize(torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "false_anchors", filename)), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
             return positive_patch, anchor_patch, 0
+        else:
+            garbage_patch = self.resize(torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "garbage", filename)), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
+            return positive_patch, garbage_patch, 0

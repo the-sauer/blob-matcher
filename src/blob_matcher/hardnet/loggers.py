@@ -23,12 +23,12 @@ class FileLogger:
 
     def log_string(self, file_name, string):
         """Stores log string in specified file."""
-        text_file = open(self.path + file_name + ".log", "a")
+        text_file = open(os.path.join(self.path, file_name + ".log"), "a")
         text_file.write(string + '' + str(string) + '\n')
         text_file.close()
 
     def log_stats(self, file_name, text_to_save, value):
         """Stores log in specified file."""
-        text_file = open(self.path + file_name + ".log", "a")
+        text_file = open(os.path.join(self.path, file_name + ".log"), "a")
         text_file.write(text_to_save + ' ' + str(value) + '\n')
         text_file.close()

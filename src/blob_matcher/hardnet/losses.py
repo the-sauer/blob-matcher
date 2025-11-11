@@ -105,7 +105,7 @@ def loss_HardNet_weighted(anchor,
         min_neg = torch.t(min_neg).squeeze(0)
         pos = pos1
     else:
-        raise ValueError('Unknown batch reduce mode. Try min, average or random')
+        raise ValueError(f'Unknown batch reduce mode "{batch_reduce}". Try min, average or random')
         sys.exit(1)
     if loss_type == "triplet_margin":
         loss = torch.clamp(margin + pos - min_neg, min=0.0)
@@ -118,7 +118,7 @@ def loss_HardNet_weighted(anchor,
         raise NotImplementedError("loss type: contrastive is not yet implemented for this loss function")
         loss = torch.clamp(margin - min_neg, min=0.0) + pos
     else:
-        raise ValueError('Unknown loss type. Try triplet_margin, softmax or contrastive')
+        raise ValueError(f'Unknown loss type "{loss}". Try triplet_margin, softmax or contrastive')
     loss = torch.mean(loss)
     return loss, min_neg_idx
 

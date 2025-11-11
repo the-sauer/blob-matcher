@@ -205,6 +205,7 @@ def train(cfg,
                     best_fpr_val = fpr_val_
                     print('saving best model with val fpr: {}'.format(
                         best_fpr_val))
+                    os.makedirs(cfg.LOGGING.MODEL_DIR, exist_ok=True)
                     torch.save(
                         {
                             'best_fpr_val:': best_fpr_val,
@@ -214,7 +215,7 @@ def train(cfg,
                             cfg.LOGGING.MODEL_DIR))
 
                     torch.save(
-                        optimizer.state_dict(),
+                        {"optimizer": optimizer.state_dict()},
                         '{}/_best_optimizer_checkpoint.pth'.format(
                             cfg.LOGGING.MODEL_DIR))
 
@@ -454,6 +455,10 @@ def main():
 
     cfg.merge_from_list(args.opts)
 
+    run_training(cfg)
+
+
+def run_training(cfg):
     cfg = create_logging_directories(cfg)
 
     if not cfg.TRAINING.NO_CUDA:
@@ -461,10 +466,6 @@ def main():
         torch.cuda.manual_seed_all(cfg.TRAINING.SEED)
         torch.backends.cudnn.deterministic = True
 
-    run_training(cfg)
-
-
-def run_training(cfg):
     # set random seeds
     random.seed(cfg.TRAINING.SEED)
     torch.manual_seed(cfg.TRAINING.SEED)
