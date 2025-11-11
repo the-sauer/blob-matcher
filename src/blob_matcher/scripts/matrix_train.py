@@ -18,8 +18,11 @@ def main():
                 for scale in [96, 128, 64]:
                     for resolution in [32, 64, 128]:
                         experiment_name = f"scale_{scale}_res_{resolution}_br_{batch_reduce}_loss_{loss}_optimizer_{optimizer}"
-
                         config = copy.deepcopy(cfg)
+                        if resolution == 64:
+                            config.TRAINING.BATCH_SIZE = 800
+                        elif resolution == 128:
+                            config.TRAINING.BATCH_SIZE = 200
                         config.TRAINING.EXPERIMENT_NAME = experiment_name
                         config.TRAINING.SCALE = scale
                         config.TEST.SCALE = scale
@@ -55,7 +58,7 @@ def main():
                                 "model_checkpoint_49.pth"
                             )
                             if not os.path.exists(os.path.join(
-                                config.TRAINING.MODEL_DIR,
+                                config.LOGGING.MODEL_DIR,
                                 f"{experiment_name}_real",
                                 "model_checkpoint_199.pth"
                             )):
