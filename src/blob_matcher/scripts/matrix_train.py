@@ -60,7 +60,8 @@ def main():
                                 "model_checkpoint_199.pth"
                             )):
                                 run_training(config)
-                        except:
+                        except Exception as e:
+                            print(e)
                             continue
 
 
