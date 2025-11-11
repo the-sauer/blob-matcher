@@ -33,10 +33,11 @@ sys.path.insert(0, os.getcwd())
 
 from blob_matcher.hardnet.data import Augmentor, \
     BlobinatorTrainingData, \
-    BlobinatorValidationData
+    BlobinatorValidationData, \
+    BlobinatorValidationPreBatchedData
 # from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
 from blob_matcher.hardnet.loggers import FileLogger
-from blob_matcher.hardnet.losses import loss_HardNet_weighted
+from blob_matcher.hardnet.losses import distance_matrix_vector, loss_HardNet_weighted
 from blob_matcher.hardnet.models import HardNet
 from torch.utils.data import Dataset
 from blob_matcher.hardnet.utils import show_images
@@ -104,15 +105,26 @@ def create_test_loaders(cfg):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    transformer_dataset = BlobinatorValidationData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation"))
     val_loaders = [{
         'name':
-        'multiple_sequences_validation',
+        'duplicated_blobs_validation',
         'dataloader':
-        torch.utils.data.DataLoader(transformer_dataset,
-                                    batch_size=cfg.TEST.TEST_BATCH_SIZE,
-                                    shuffle=True,
-                                    **kwargs)
+        torch.utils.data.DataLoader(
+            BlobinatorValidationPreBatchedData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation")),
+            batch_size=None,
+            shuffle=True,
+            **kwargs
+        )
+    } if os.path.basename(cfg.BLOBINATOR.DATASET_PATH) == "real" else {
+        'name':
+        'no_duplicated_blobs_validation',
+        'dataloader':
+        torch.utils.data.DataLoader(
+            BlobinatorValidationData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation")),
+            batch_size=cfg.TEST.TEST_BATCH_SIZE,
+            shuffle=True,
+            **kwargs
+        )
     }]
 
     test_loaders = None
@@ -291,11 +303,8 @@ def filter_orientation(out_a, out_p, label, theta_a, theta_p, orientCorrect,
 def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_test_name):
     # switch to evaluate mode
     model.eval()
-    labels, distances = [], []
-
+    
     pbar = tqdm(enumerate(test_loader))
-    num_tests = 0
-    for batch_idx, data in pbar:
         # data for our data set: img,img,meta,meta,ID,ID,match
         # data for Brown data  : img,img,match
 
@@ -324,66 +333,84 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
         #     data[9]  # set to correction factor if on different images, 0 else
         # # set to correction factor if on different images, 0 else
         # orientCorrect = None if patchwise else diffImg * data[10]
+    if isinstance(test_loader.dataset, BlobinatorValidationData):
+        num_tests = 0
+        labels, distances = [], []
+        for batch_idx, data in pbar:
+            img_a, img_p, label = data
+            img_a = img_a.to(device)
+            img_p = img_p.to(device)
 
-        img_a, img_p, label = data
-        img_a = img_a.to(device)
-        img_p = img_p.to(device)
+            # forward-propagate input through network and get [batchSize x 1 x
+            # resolution x resolution] output array
+            out_a, _ = model(img_a)
 
-        # forward-propagate input through network and get [batchSize x 1 x
-        # resolution x resolution] output array
-        out_a, _ = model(img_a)
+            # forward-propagate input through network and get [batchSize x 1 x
+            # resolution x resolution] output array
+            out_p, _ = model(img_p)
 
-        # forward-propagate input through network and get [batchSize x 1 x
-        # resolution x resolution] output array
-        out_p, _ = model(img_p)
+            label = label.to(device)
 
-        label = label.to(device)
+            # if cfg.TEST.ENABLE_ORIENTATION_FILTERING and theta_a:
+            #     # Filter for all the orienations less than specified value
+            #     out_a, out_p, label = filter_orientation(
+            #         out_a, out_p, label, theta_a, theta_p, orientCorrect,
+            #         cfg.TRAINING.ORIENTATION_FILTER_VALUE)
 
-        # if cfg.TEST.ENABLE_ORIENTATION_FILTERING and theta_a:
-        #     # Filter for all the orienations less than specified value
-        #     out_a, out_p, label = filter_orientation(
-        #         out_a, out_p, label, theta_a, theta_p, orientCorrect,
-        #         cfg.TRAINING.ORIENTATION_FILTER_VALUE)
+            num_tests += len(out_a)
 
-        num_tests += len(out_a)
+            dists = torch.sqrt(torch.sum((out_a - out_p)**2,
+                                        1))  # euclidean distance
+            distances.extend(dists.data.cpu().numpy().reshape(-1, 1))
+            ll = label.data.cpu().numpy().reshape(-1, 1)
+            labels.extend(ll)
 
-        dists = torch.sqrt(torch.sum((out_a - out_p)**2,
-                                     1))  # euclidean distance
-        distances.extend(dists.data.cpu().numpy().reshape(-1, 1))
-        ll = label.data.cpu().numpy().reshape(-1, 1)
-        labels.extend(ll)
+            if batch_idx % cfg.LOGGING.LOG_INTERVAL == 0:
+                pbar.set_description(logger_test_name +
+                                    ' Test Epoch: {} [{}/{} ({:.0f}%)]'.format(
+                                        epoch, batch_idx * len(label),
+                                        len(test_loader.dataset), 100. *
+                                        batch_idx / len(test_loader)))
+        # compute statistics
+        print('Number of test samples: {}'.format(num_tests))
+        labels = np.vstack(labels).reshape(num_tests)
+        distances = np.vstack(distances).reshape(num_tests)
+        if cfg.TEST.ENABLE_ORIENTATION_FILTERING:
 
-        if batch_idx % cfg.LOGGING.LOG_INTERVAL == 0:
+            positive_indices = np.where(labels == 1)[0]
+            negative_indices = np.where(labels == 0)[0]
+
+            # to get random same negatives, not to omit any particular sequence
+            random.Random(42).shuffle(negative_indices)
+
+            negative_indices = negative_indices[0:len(positive_indices)]
+
+            labels = np.concatenate(
+                [labels[positive_indices], labels[negative_indices]])
+            distances = np.concatenate(
+                [distances[positive_indices], distances[negative_indices]])
+
+        fpr95 = ErrorRateAt95Recall(labels, 1.0 / (distances + 1e-8))
+        print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(
+            logger_test_name, fpr95))
+    else:
+        fpr95_num = 0
+        fpr95_sum = 0
+        for batch_idx, data in pbar:
+            img_a, img_p, img_g = data
+            out_a, _ = model(img_a.to(device))
+            out_p, _ = model(img_p.to(device))
+            out_g, _ = model(img_g.to(device))
+            distances = distance_matrix_vector(out_a, torch.concat((out_p, out_g))).detach().cpu().numpy().flatten()
+            label = torch.eye(out_a.size(0), out_p.size(0) + out_g.size(0)).cpu().numpy().flatten()
+            fpr95_num += distances.size
+            fpr95_sum += distances.size * ErrorRateAt95Recall(label, 1.0 / (distances + 1e-8))
             pbar.set_description(logger_test_name +
-                                 ' Test Epoch: {} [{}/{} ({:.0f}%)]'.format(
-                                     epoch, batch_idx * len(label),
-                                     len(test_loader.dataset), 100. *
-                                     batch_idx / len(test_loader)))
-
-    # compute statistics
-    print('Number of test samples: {}'.format(num_tests))
-    labels = np.vstack(labels).reshape(num_tests)
-    distances = np.vstack(distances).reshape(num_tests)
-
-    if cfg.TEST.ENABLE_ORIENTATION_FILTERING:
-
-        positive_indices = np.where(labels == 1)[0]
-        negative_indices = np.where(labels == 0)[0]
-
-        # to get random same negatives, not to omit any particular sequence
-        random.Random(42).shuffle(negative_indices)
-
-        negative_indices = negative_indices[0:len(positive_indices)]
-
-        labels = np.concatenate(
-            [labels[positive_indices], labels[negative_indices]])
-        distances = np.concatenate(
-            [distances[positive_indices], distances[negative_indices]])
-
-    fpr95 = ErrorRateAt95Recall(labels, 1.0 / (distances + 1e-8))
-    print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(
-        logger_test_name, fpr95))
-
+                                    ' Test Epoch: {} [{}/{} ({:.0f}%)]'.format(
+                                        epoch, batch_idx * len(label),
+                                        len(test_loader.dataset), 100. *
+                                        batch_idx / len(test_loader)))
+        fpr95 = fpr95_sum / fpr95_num
     if (cfg.LOGGING.ENABLE_LOGGING):
         #logger.log_value(logger_test_name + ' fpr95', fpr95)
         file_logger.log_string(

@@ -161,3 +161,77 @@ class BlobinatorValidationData(torch.utils.data.Dataset):
         else:
             garbage_patch = self.resize(torchvision.io.decode_image(os.path.join(os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "garbage", filename)), torchvision.io.ImageReadMode.GRAY).to(torch.float32) / 255)
             return positive_patch, garbage_patch, 0
+        
+
+class BlobinatorValidationPreBatchedData(torch.utils.data.Dataset):
+    def __init__(self, cfg, path):
+        self.cfg = cfg
+        self.path = path
+        patch_size = self.cfg.INPUT.IMAGE_SIZE
+        self.resize = torchvision.transforms.Resize((patch_size, patch_size))
+        self.positive_path_regex = re.compile("(\\d+)_(\\d+).png")
+        self.image_ids = list(set(map(
+            lambda m: m.group(1),
+            filter(
+                lambda m: m is not None,
+                map(
+                    lambda p: self.positive_path_regex.match(p),
+                    os.listdir(os.path.join(path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives"))
+                )
+            )
+        )))
+        self.positive_ids = {
+            i: list(map(
+                lambda m: m.group(2),
+                filter(
+                    lambda m: m is not None and m.group(1) == i,
+                    map(
+                        lambda p: self.positive_path_regex.match(p),
+                        os.listdir(os.path.join(path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "positives"))
+                    )
+                )
+            )) for i in self.image_ids
+        }
+        self.garbage_ids = {
+            i: list(map(
+                lambda m: m.group(2),
+                filter(
+                    lambda m: m is not None and m.group(1) == i,
+                    map(
+                        lambda p: self.positive_path_regex.match(p),
+                        os.listdir(os.path.join(path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}", "garbage"))
+                    )
+                )
+            )) for i in self.image_ids
+        }
+        pass
+
+    def __len__(self):
+        return len(self.image_ids)
+
+    def __getitem__(self, idx):
+        image_idx = self.image_ids[idx]
+        anchor_patches = torch.empty((len(self.positive_ids[image_idx]), 1, self.cfg.INPUT.IMAGE_SIZE,  self.cfg.INPUT.IMAGE_SIZE))
+        positive_patches = torch.empty((len(self.positive_ids[image_idx]), 1, self.cfg.INPUT.IMAGE_SIZE,  self.cfg.INPUT.IMAGE_SIZE))
+        garbage_patches = torch.empty((len(self.garbage_ids[image_idx]), 1, self.cfg.INPUT.IMAGE_SIZE,  self.cfg.INPUT.IMAGE_SIZE))
+        for blob_idx in range(anchor_patches.size(0)):
+            anchor_patches[blob_idx] = self.resize(
+                torchvision.io.decode_image(
+                    os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "anchors", f"{image_idx}_{self.positive_ids[image_idx][blob_idx]}.png"),
+                    torchvision.io.ImageReadMode.GRAY
+                ).to(torch.float32) / 255
+            )
+            positive_patches[blob_idx] = self.resize(
+                torchvision.io.decode_image(
+                    os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "positives", f"{image_idx}_{self.positive_ids[image_idx][blob_idx]}.png"),
+                    torchvision.io.ImageReadMode.GRAY
+                ).to(torch.float32) / 255
+            )
+        for blob_idx in range(garbage_patches.size(0)):
+            garbage_patches[blob_idx] = self.resize(
+                torchvision.io.decode_image(
+                    os.path.join(self.path, "patches", f"{int(self.cfg.BLOBINATOR.PATCH_SCALE_FACTOR)}",  "garbage", f"{image_idx}_{self.positive_ids[image_idx][blob_idx]}.png"),
+                    torchvision.io.ImageReadMode.GRAY
+                ).to(torch.float32) / 255
+            )
+        return anchor_patches, positive_patches, garbage_patches
