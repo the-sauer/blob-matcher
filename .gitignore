@@ -217,7 +217,10 @@ __marimo__/
 
 data
 
-*.pt[h]
+*.pt
+*.pth
+!src/blob_matcher/data/**.pt
+!src/blob_matcher/data/**.pth
 
 .DS_Store
 
