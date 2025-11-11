@@ -110,12 +110,10 @@ def loss_HardNet_weighted(anchor,
     if loss_type == "triplet_margin":
         loss = torch.clamp(margin + pos - min_neg, min=0.0)
     elif loss_type == 'softmax':
-        raise NotImplementedError("loss type: softmax is not yet implemented for this loss function")
         exp_pos = torch.exp(2.0 - pos)
         exp_den = exp_pos + torch.exp(2.0 - min_neg) + eps
         loss = -torch.log(exp_pos / exp_den)
     elif loss_type == 'contrastive':
-        raise NotImplementedError("loss type: contrastive is not yet implemented for this loss function")
         loss = torch.clamp(margin - min_neg, min=0.0) + pos
     else:
         raise ValueError(f'Unknown loss type "{loss}". Try triplet_margin, softmax or contrastive')
