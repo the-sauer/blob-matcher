@@ -406,9 +406,9 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
             descriptors_g = []
             assert len(img_a_chunks) == len(img_p_chunks) and len(img_a_chunks) == len(img_g_chunks)
             for i in range(len(img_a_chunks)):
-                descriptors_a.append(model(img_a_chunks[i].to(device)).cpu())
-                descriptors_p.append(model(img_p_chunks[i].to(device)).cpu())
-                descriptors_g.append(model(img_g_chunks[i].to(device)).cpu())
+                descriptors_a.append(model(img_a_chunks[i].to(device))[0].cpu())
+                descriptors_p.append(model(img_p_chunks[i].to(device))[0].cpu())
+                descriptors_g.append(model(img_g_chunks[i].to(device))[0].cpu())
             out_a = torch.cat(descriptors_a)
             out_p = torch.cat(descriptors_a)
             out_g = torch.cat(descriptors_a)
