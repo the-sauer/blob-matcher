@@ -25,59 +25,30 @@ If you use this code, please cite ::
     (c) 2017 by Anastasiia Mishchuk, Dmytro Mishkin
 """
 
+
 from __future__ import division, print_function
 
-import sys
+
+import argparse
+import random
 import os
-sys.path.insert(0, os.getcwd()) 
+
+
+import numpy as np
+from tqdm import tqdm
+import torch
+import torch.optim as optim
+
 
 from blob_matcher.hardnet.data import Augmentor, \
     BlobinatorTrainingData, \
     BlobinatorValidationData, \
     BlobinatorValidationPreBatchedData
-# from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
 from blob_matcher.hardnet.loggers import FileLogger
 from blob_matcher.hardnet.losses import distance_matrix_vector, loss_HardNet_weighted
 from blob_matcher.hardnet.models import HardNet
-from torch.utils.data import Dataset
 from blob_matcher.hardnet.utils import show_images
-from blob_matcher.hardnet.utils import cv2_scale, np_reshape, np_reshape64
 from blob_matcher.hardnet.eval_metrics import ErrorRateAt95Recall
-import random
-import argparse
-import numpy as np
-from tqdm import tqdm
-
-import copy
-import torch
-import torch.nn.init
-import torch.optim as optim
-import torchvision.transforms as transforms
-import torch.backends.cudnn as cudnn
-
-# define training and test sequences (validation sequences are loaded from
-# meta information)
-train_sequences = [
-    'notre_dame_front_facade', 'sacre_coeur', 'pantheon_exterior',
-    'brandenburg_gate', 'buckingham', 'colosseum_exterior',
-    'grand_place_brussels', 'palace_of_westminster', 'st_peters_square',
-    'taj_mahal', 'temple_nara_japan'
-]
-test_sequences = [
-    # 'british_museum',
-    # 'florence_cathedral_side',
-    # 'lincoln_memorial_statue',
-    # 'milan_cathedral',
-    # 'mount_rushmore',
-    # 'reichstag',
-    # 'sagrada_familia',
-    # 'st_pauls_cathedral',
-    # 'united_states_capitol'
-]
-
-brown_test_sequences = ['notredame']
-
-# defines list of transformations applied to input patches
 
 
 def create_train_loader(cfg):
