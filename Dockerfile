@@ -6,4 +6,5 @@ RUN apt install git -y
 
 RUN pip install git+https://github.com/the-sauer/blob-matcher
 
-
+WORKDIR /blobinator
+RUN mkdir /blobinator/data

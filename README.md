@@ -27,6 +27,19 @@ cd log-polar-descriptors
 pip install -e .
 ```
 
+### Docker
+
+Build the image with
+```sh
+docker build -t blob-matcher .
+```
+
+Then run the container with
+```sh
+docker run --mount type=bind,src=./data,dst=/blobinator/data -i -t blob-matcher /bin/bash
+```
+make sure you have a data directory.
+
 ## Train the descriptor
 
 ### Obtaining the dataset
