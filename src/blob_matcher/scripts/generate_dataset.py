@@ -387,7 +387,11 @@ def generate_dataset(
 
 
 def generate_real_dataset(homographies, cfg, path, validation_boards):
-    augmentation = v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5)
+    augmentation = v2.Compose([
+        v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5),
+        v2.RandomApply([v2.GaussianBlur(37, sigma=(4, 6))], 0.2),
+        v2.GaussianNoise()
+    ])
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -396,14 +400,18 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
     print(device)
 
     for i, (image, board) in enumerate(homographies.keys()):
-        subdir = "validation" if board in validation_boards else "training"
+        is_validation = board in validation_boards
+        if not is_validation:
+            continue
+        subdir = "validation" if is_validation else "training"
         img = (
             torchvision.io.decode_image(image, torchvision.io.ImageReadMode.GRAY)
             .to(device)
             .to(torch.float32)
             / 255
         )
-        img = augmentation(img)
+        if not is_validation:
+            img = augmentation(img)
         blobboard_info = read_json(
             f"./data/real_image_data/2025_11_05/boards/blob_board_{board}.json"
         )
@@ -497,17 +505,17 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
         )
         normalization = torch.diag(scale) @ translation_mat
         os.makedirs(os.path.join(path, subdir, "warped_images"), exist_ok=True)
-        torchvision.utils.save_image(
-            map_blobs(
-                img.unsqueeze(0),
-                (homographies[(image, board)].to(torch.float32) @ normalization)
-                .to(device)
-                .unsqueeze(0),
-                blobboard.unsqueeze(0),
-                blob_alpha=0.5,
-            ),
-            os.path.join(path, subdir, "warped_images", f"{i:04}.png"),
-        )
+        # torchvision.utils.save_image(
+        #     map_blobs(
+        #         img.unsqueeze(0),
+        #         (homographies[(image, board)].to(torch.float32) @ normalization)
+        #         .to(device)
+        #         .unsqueeze(0),
+        #         blobboard.unsqueeze(0),
+        #         blob_alpha=0.5,
+        #     ),
+        #     os.path.join(path, subdir, "warped_images", f"{i:04}.png"),
+        # )
 
         keypoint_pairs = zip(
             map(lambda k: (k[:2], (k[2], k[2]), 0), keypoints),
@@ -521,7 +529,7 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
                 ),
             ),
         )
-        min_keypoint_size = 4
+        min_keypoint_size = 2 if is_validation else 4
         anchor_keypoints, positive_keypoints = list(
             zip(
                 *filter(
@@ -714,7 +722,6 @@ def main():
     # torch.manual_seed(cfg.TRAINING.SEED)
     # np.random.seed(cfg.TRAINING.SEED)
 
-
     validation_split = 0.2
 
     boards = []
@@ -805,4 +812,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from blob_matcher.configs.defaults import _C as cfg
+    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/2025_11_19/real", ["3f9"])
+    # main()
