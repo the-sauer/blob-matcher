@@ -86,7 +86,7 @@ def create_test_loaders(cfg):
             shuffle=True,
             **kwargs
         )
-    } if os.path.basename(cfg.BLOBINATOR.DATASET_PATH) == "real" else {
+    } if os.path.basename(cfg.BLOBINATOR.DATASET_PATH).startswith("real") else {
         'name':
         'no_duplicated_blobs_validation',
         'dataloader':
@@ -139,7 +139,7 @@ def train(cfg,
         out_p, p_p = model(img_p)
 
         if img_g.size(0) > 0:
-            out_g, _ = model(img_g)
+            out_g, p_g = model(img_g)
         else:
             out_g = None
 
@@ -158,7 +158,7 @@ def train(cfg,
             show_images([
                 p_a[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
                 p_p[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
-                p_p[min_neg_idx[tripletIDX], :, :, :].squeeze().data.cpu(
+                torch.cat([p_p, p_g])[min_neg_idx[tripletIDX], :, :, :].squeeze().data.cpu(
                 ).numpy() * 255
             ], cfg.LOGGING.IMGS_DIR + '/img_' + '.png')
 
