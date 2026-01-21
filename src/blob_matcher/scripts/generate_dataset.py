@@ -130,7 +130,7 @@ def generate_dataset(
     blobboard_shape = BLOBBOARD_RESOLUTION
     homographies = {
         background: {
-            board: sample_homography(blobboard_shape, IMAGE_RESOLUTION **homography_kwargs).to(device)
+            board: sample_homography(blobboard_shape, IMAGE_RESOLUTION, **homography_kwargs).to(device)
             for board in random.choices(boards, k=random.randint(1, max_boards_per_image))
         } for background in backgrounds
     }
