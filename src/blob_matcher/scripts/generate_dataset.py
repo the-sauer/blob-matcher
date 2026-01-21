@@ -58,7 +58,7 @@ except ModuleNotFoundError:
 # The datasets to be created. Containing a name, a transform for the images, and parameters for the homography sampling
 DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.Any]]] = [
     (
-        "easy",
+        "generated",
         v2.Compose(
             [v2.ColorJitter(), v2.GaussianBlur(kernel_size=(5, 5)), v2.GaussianNoise()]
         ),
@@ -68,41 +68,6 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.
             "scale_aug": 0.05,
         },
     ),
-    (
-        "hard",
-        v2.Compose(
-            [
-                v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5),
-                v2.GaussianBlur(kernel_size=(7, 7)),
-                v2.GaussianNoise(),
-            ]
-        ),
-        {
-            "base_scale": 0.2,
-            "scaling_amplitude": 0.1,
-            "perspective_amplitude_x": 0.8,
-            "perspective_amplitude_y": 0.8,
-            "allow_artifacts": True,
-        },
-        {
-            "location_aug": 0.1,
-            "scale_aug": 0.1,
-        },
-    ),
-    # (
-    #     "very_hard",
-    #     v2.Compose([
-    #         v2.ColorJitter(),
-    #         v2.GaussianBlur(kernel_size=(11, 11)),
-    #         v2.GaussianNoise()
-    #     ]),
-    #     {
-    #         "base_scale": 0.2,
-    #         "scaling_amplitude": 0.5,
-    #         "perspective_amplitude_x": 1,
-    #         "perspective_amplitude_y": 4
-    #     }
-    # ),
 ]
 
 
@@ -216,6 +181,7 @@ def generate_dataset(
         torchvision.utils.save_image(
             warped_image, os.path.join(path, "warped_images", f"{i:04}.png")
         )
+        continue
 
         blobboard_info = read_json(boards[i][0])
         keypoints = keypoints_to_torch(blobboard_info)
@@ -801,6 +767,7 @@ def main():
             augmentation_args,
             is_validation=True,
         )
+    return
     generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
 
 
