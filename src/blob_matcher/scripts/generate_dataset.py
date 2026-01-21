@@ -69,6 +69,9 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.
     ),
 ]
 
+IMAGE_RESOLUTION = (4000, 6000)
+BLOBBOARD_RESOLUTION = (7087, 7087)
+
 
 def map_blobs(
     background: torch.Tensor,
@@ -122,12 +125,12 @@ def generate_dataset(
     )
     print(device)
 
-    resize = torchvision.transforms.Resize((4000, 6000)).to(device)
+    resize = torchvision.transforms.Resize(IMAGE_RESOLUTION).to(device)
 
-    blobboard_shape = (7087, 7087)
+    blobboard_shape = BLOBBOARD_RESOLUTION
     homographies = {
         background: {
-            board: sample_homography(blobboard_shape, (4000, 6000), **homography_kwargs).to(device)
+            board: sample_homography(blobboard_shape, IMAGE_RESOLUTION **homography_kwargs).to(device)
             for board in random.choices(boards, k=random.randint(1, max_boards_per_image))
         } for background in backgrounds
     }
