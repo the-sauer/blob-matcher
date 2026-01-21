@@ -55,18 +55,17 @@ except ModuleNotFoundError:
     dpi = 1 / ureg.inch
 
 
-# The datasets to be created. Containing a name, a transform for the images, and parameters for the homography sampling
+# The datasets to be created. Containing a name, a transform for the images, parameters for the homography sampling, and keypoint augmentation parameters
 DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.Any]]] = [
     (
         "generated",
         v2.Compose(
             [v2.ColorJitter(), v2.GaussianBlur(kernel_size=(5, 5)), v2.GaussianNoise()]
         ),
-        {},
         {
-            "location_aug": 0.05,
-            "scale_aug": 0.05,
+            "base_scale": 0.4
         },
+        {},
     ),
 ]
 
@@ -113,6 +112,7 @@ def generate_dataset(
     homography_kwargs,
     augmentation_args,
     is_validation=False,
+    max_boards_per_image=3
 ):
     os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
     device = torch.device(
@@ -125,12 +125,12 @@ def generate_dataset(
     resize = torchvision.transforms.Resize((4000, 6000)).to(device)
 
     blobboard_shape = (7087, 7087)
-    homographies = torch.stack(
-        [
-            sample_homography(blobboard_shape, (4000, 6000), **homography_kwargs)
-            for _ in range(len(backgrounds))
-        ]
-    ).to(device)
+    homographies = {
+        background: {
+            board: sample_homography(blobboard_shape, (4000, 6000), **homography_kwargs).to(device)
+            for board in random.choices(boards, k=random.randint(1, max_boards_per_image))
+        } for background in backgrounds
+    }
     torch.save(homographies, os.path.join(path, "homographies.pt"))
 
     blobboard_json = read_json(boards[0][0])
@@ -167,19 +167,20 @@ def generate_dataset(
         #     crop2 = crop1 if 2 * crop1 + img.shape[1] == img.shape[2] else crop1 + 1
         #     img = resize(img[:, :, crop1:-crop2])
         # else:
-        img = resize(img).to(device)
-        blobboard = (
-            torchvision.io.decode_image(boards[i][1], torchvision.io.ImageReadMode.GRAY)
-            .to(torch.float32)
-            .to(device)
-            / 255
-        )
-        warped_image = map_blobs(
-            img.unsqueeze(0), homographies[i].unsqueeze(0), blobboard.unsqueeze(0)
-        )
-        warped_image = image_transform(warped_image)
+        img = resize(img).to(device).unsqueeze(0)
+        for board in homographies[backgrounds[i]]:
+            blobboard = (
+                torchvision.io.decode_image(board[1], torchvision.io.ImageReadMode.GRAY)
+                .to(torch.float32)
+                .to(device)
+                / 255
+            )
+            img = map_blobs(
+                img, homographies[backgrounds[i]][board].unsqueeze(0), blobboard.unsqueeze(0)
+            )
+        img = image_transform(img)
         torchvision.utils.save_image(
-            warped_image, os.path.join(path, "warped_images", f"{i:04}.png")
+            img, os.path.join(path, "warped_images", f"{i:04}.png")
         )
         continue
 
