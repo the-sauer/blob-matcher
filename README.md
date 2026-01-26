@@ -9,7 +9,7 @@ This repository contains the *BlobMatcher* feature matching module for *BlobBoar
 
 ## Usage
 
-Make sure you have Python3.9 or later installed. Install the BlobMatcher with
+Make sure you have Python3.11 or later installed. Install the BlobMatcher with
 ```sh
 pip install --update git+https://github.com/the-sauer/log-polar-descriptors@master
 ```
