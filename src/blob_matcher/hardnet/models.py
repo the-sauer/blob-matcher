@@ -31,6 +31,7 @@ class L2Norm(nn.Module):
 class HardNet(nn.Module):
     def __init__(self, patch_size=32):
         super(HardNet, self).__init__()
+        self.patch_size = patch_size
 
         # model processing patches of size [32 x 32] and giving description vectors of length 2**7
         if patch_size == 32:
