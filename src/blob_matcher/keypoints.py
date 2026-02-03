@@ -1,4 +1,4 @@
-# Copyright 2019 Hendrik Sauer
+# Copyright 2025 Hendrik Sauer
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
