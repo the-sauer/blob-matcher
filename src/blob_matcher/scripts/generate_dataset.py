@@ -57,17 +57,17 @@ except ModuleNotFoundError:
 
 # The datasets to be created. Containing a name, a transform for the images, and parameters for the homography sampling
 DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.Any]]] = [
-    (
-        "easy",
-        v2.Compose(
-            [v2.ColorJitter(), v2.GaussianBlur(kernel_size=(5, 5)), v2.GaussianNoise()]
-        ),
-        {},
-        {
-            "location_aug": 0.05,
-            "scale_aug": 0.05,
-        },
-    ),
+    #(
+    #    "easy",
+    #    v2.Compose(
+    #        [v2.ColorJitter(), v2.GaussianBlur(kernel_size=(5, 5)), v2.GaussianNoise()]
+    #    ),
+    #    {},
+    #    {
+    #        "location_aug": 0.05,
+    #        "scale_aug": 0.05,
+    #    },
+    #),
     (
         "hard",
         v2.Compose(
@@ -78,7 +78,7 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.
             ]
         ),
         {
-            "base_scale": 0.2,
+            "base_scale": 0.05,
             "scaling_amplitude": 0.1,
             "perspective_amplitude_x": 0.8,
             "perspective_amplitude_y": 0.8,
@@ -148,6 +148,8 @@ def generate_dataset(
     homography_kwargs,
     augmentation_args,
     is_validation=False,
+    generate_heatmap=True,
+    generate_patches=True
 ):
     os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
     device = torch.device(
@@ -167,7 +169,6 @@ def generate_dataset(
         ]
     ).to(device)
     torch.save(homographies, os.path.join(path, "homographies.pt"))
-
     blobboard_json = read_json(boards[0][0])
     blobboard_shape = blobboard_json["preamble"]["board_config"]["canvas_size"]
     blobboard_shape = (
@@ -216,7 +217,15 @@ def generate_dataset(
         torchvision.utils.save_image(
             warped_image, os.path.join(path, "warped_images", f"{i:04}.png")
         )
-
+        if generate_heatmap:
+            heatmap = kornia.geometry.transform.warp_perspective(
+                torch.ones((1, 1, 1)).expand(1, *blobboard_shape),
+                homographies[i],
+                (backgrounds.shape[2], backgrounds.shape[3])
+            )
+            torchvision.utils.save_image(heatmap, os.path.join(path, "heatmaps", f"{i:04}.png"))
+        if not generate_patches:
+            continue
         blobboard_info = read_json(boards[i][0])
         keypoints = keypoints_to_torch(blobboard_info)
         sigma_cutoff = blobboard_info["preamble"]["pattern_config"]["sigma_cutoff"]
@@ -790,6 +799,7 @@ def main():
             homography_kwargs,
             augmentation_args,
             is_validation=False,
+            generate_patches=False,
         )
         generate_dataset(
             cfg,
@@ -800,6 +810,7 @@ def main():
             homography_kwargs,
             augmentation_args,
             is_validation=True,
+            generate_patches=False,
         )
     generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
 
