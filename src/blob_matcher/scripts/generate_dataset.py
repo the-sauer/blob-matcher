@@ -152,6 +152,8 @@ def generate_dataset(
     generate_patches=True
 ):
     os.makedirs(os.path.join(path, "warped_images"), exist_ok=True)
+    if generate_heatmap:
+        os.makedirs(os.path.join(path, "heatmaps"), exist_ok=True)
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -219,9 +221,9 @@ def generate_dataset(
         )
         if generate_heatmap:
             heatmap = kornia.geometry.transform.warp_perspective(
-                torch.ones((1, 1, 1)).expand(1, *blobboard_shape),
-                homographies[i],
-                (backgrounds.shape[2], backgrounds.shape[3])
+                torch.ones((1, 1, 1, 1)).expand((1, 1, *map(int, blobboard_shape))).to(device),
+                homographies[i].unsqueeze(0),
+                (4000, 6000)
             )
             torchvision.utils.save_image(heatmap, os.path.join(path, "heatmaps", f"{i:04}.png"))
         if not generate_patches:
