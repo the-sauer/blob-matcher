@@ -472,7 +472,7 @@ def run_training(cfg):
     torch.manual_seed(cfg.TRAINING.SEED)
     np.random.seed(cfg.TRAINING.SEED)
 
-    model = HardNet(patch_size=cfg.TRAINING.IMAGE_SIZE)
+    model = HardNet(patch_size=cfg.TRAINING.IMAGE_SIZE, slim=cfg.SLIM, shallow=cfg.SHALLOW)
     logger, file_logger = None, None
 
     if cfg.LOGGING.ENABLE_LOGGING:

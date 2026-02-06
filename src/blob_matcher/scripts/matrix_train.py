@@ -26,60 +26,65 @@ def main():
     cfg.LOGGING.MODEL_DIR = os.path.join('data/models/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
     cfg.LOGGING.IMGS_DIR = os.path.join('data/images/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
 
-    for loss in ["triplet_margin"]:
-        for batch_reduce in ["min"]:
-            for optimizer in ["sgd", "adam"]:
-                for scale in [96, 128, 64]:
-                    for resolution in [32, 64, 128]:
-                        experiment_name = f"scale_{scale}_res_{resolution}_br_{batch_reduce}_loss_{loss}_optimizer_{optimizer}"
-                        config = copy.deepcopy(cfg)
-                        if resolution == 64:
-                            config.TRAINING.BATCH_SIZE = 800
-                        elif resolution == 128:
-                            config.TRAINING.BATCH_SIZE = 200
-                        config.TRAINING.EXPERIMENT_NAME = experiment_name
-                        config.TRAINING.SCALE = scale
-                        config.TEST.SCALE = scale
-                        config.BLOBINATOR.PATCH_SCALE_FACTOR = scale
-                        config.INPUT.IMAGE_SIZE = resolution
-                        config.TEST.IMAGE_SIZE = resolution
-                        config.TRAINING.IMAGE_SIZE = resolution
-                        config.TRAINING.LOSS = loss
-                        config.TRAINING.BATCH_REDUCE = batch_reduce
-                        config.TRAINING.OPTIMIZER = optimizer
+    for scale in [96]:
+        for resolution in [32, 64]:
+            for shallow in [True, False]:
+                for slim in [True, False]:
+                    experiment_name = f"scale_{scale}_res_{resolution}"
+                    if slim:
+                        experiment_name += "_slim"
+                    if shallow:
+                        experiment_name += "_shallow"
+                    config = copy.deepcopy(cfg)
+                    if resolution == 64:
+                        config.TRAINING.BATCH_SIZE = 800
+                    elif resolution == 128:
+                        config.TRAINING.BATCH_SIZE = 200
+                    config.TRAINING.EXPERIMENT_NAME = experiment_name
+                    config.TRAINING.SCALE = scale
+                    config.TEST.SCALE = scale
+                    config.BLOBINATOR.PATCH_SCALE_FACTOR = scale
+                    config.INPUT.IMAGE_SIZE = resolution
+                    config.TEST.IMAGE_SIZE = resolution
+                    config.TRAINING.IMAGE_SIZE = resolution
+                    config.TRAINING.OPTIMIZER = "sgd"
 
-                        config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_easy"
-                        config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/easy"
-                        config.TRAINING.EPOCHS = 50
-                        print(f"Running {experiment_name} now")
-                        try:
-                            if not os.path.exists(os.path.join(
-                                config.LOGGING.MODEL_DIR,
-                                f"{experiment_name}_easy",
-                                "model_checkpoint_49.pth"
-                            )):
-                                run_training(config)
-                            config.TEST.EVAL_INTERVAL = 20
-                            config.LOGGING.LOG_DIR = os.path.join('data/logs/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
-                            config.LOGGING.MODEL_DIR = os.path.join('data/models/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
-                            config.LOGGING.IMGS_DIR = os.path.join('data/images/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
-                            config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_real"
-                            config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/real"
-                            config.TRAINING.EPOCHS = 200
-                            config.TRAINING.RESUME = os.path.join(
-                                config.LOGGING.MODEL_DIR,
-                                f"{experiment_name}_easy",
-                                "model_checkpoint_49.pth"
-                            )
-                            if not os.path.exists(os.path.join(
-                                config.LOGGING.MODEL_DIR,
-                                f"{experiment_name}_real",
-                                "model_checkpoint_199.pth"
-                            )):
-                                run_training(config)
-                        except Exception as e:
-                            print(e)
-                            continue
+                    config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_easy"
+                    config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/easy"
+                    config.TRAINING.EPOCHS = 50
+
+                    config.SLIM = slim
+                    config.SHALLOW = shallow
+
+                    print(f"Running {experiment_name} now")
+                    try:
+                        if not os.path.exists(os.path.join(
+                            config.LOGGING.MODEL_DIR,
+                            f"{experiment_name}_easy",
+                            "model_checkpoint_49.pth"
+                        )):
+                            run_training(config)
+                        config.TEST.EVAL_INTERVAL = 20
+                        config.LOGGING.LOG_DIR = os.path.join('data/logs/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
+                        config.LOGGING.MODEL_DIR = os.path.join('data/models/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
+                        config.LOGGING.IMGS_DIR = os.path.join('data/images/', datetime.today().strftime('%Y_%m_%d'), "matrix_train")
+                        config.TRAINING.EXPERIMENT_NAME = f"{experiment_name}_real"
+                        config.BLOBINATOR.DATASET_PATH = "./data/datasets/new/real"
+                        config.TRAINING.EPOCHS = 200
+                        config.TRAINING.RESUME = os.path.join(
+                            config.LOGGING.MODEL_DIR,
+                            f"{experiment_name}_easy",
+                            "model_checkpoint_49.pth"
+                        )
+                        if not os.path.exists(os.path.join(
+                            config.LOGGING.MODEL_DIR,
+                            f"{experiment_name}_real",
+                            "model_checkpoint_199.pth"
+                        )):
+                            run_training(config)
+                    except Exception as e:
+                        print(e)
+                        continue
 
 
 if __name__ == "__main__":
