@@ -25,59 +25,30 @@ If you use this code, please cite ::
     (c) 2017 by Anastasiia Mishchuk, Dmytro Mishkin
 """
 
+
 from __future__ import division, print_function
 
-import sys
+
+import argparse
+import random
 import os
-sys.path.insert(0, os.getcwd()) 
+
+
+import numpy as np
+from tqdm import tqdm
+import torch
+import torch.optim as optim
+
 
 from blob_matcher.hardnet.data import Augmentor, \
     BlobinatorTrainingData, \
     BlobinatorValidationData, \
     BlobinatorValidationPreBatchedData
-# from modules.ptn.pytorch.blobinator_dataset import BlobinatorTrainDataset, BlobinatorBlobToBlobValidationDataset
 from blob_matcher.hardnet.loggers import FileLogger
 from blob_matcher.hardnet.losses import distance_matrix_vector, loss_HardNet_weighted
 from blob_matcher.hardnet.models import HardNet
-from torch.utils.data import Dataset
 from blob_matcher.hardnet.utils import show_images
-from blob_matcher.hardnet.utils import cv2_scale, np_reshape, np_reshape64
 from blob_matcher.hardnet.eval_metrics import ErrorRateAt95Recall
-import random
-import argparse
-import numpy as np
-from tqdm import tqdm
-
-import copy
-import torch
-import torch.nn.init
-import torch.optim as optim
-import torchvision.transforms as transforms
-import torch.backends.cudnn as cudnn
-
-# define training and test sequences (validation sequences are loaded from
-# meta information)
-train_sequences = [
-    'notre_dame_front_facade', 'sacre_coeur', 'pantheon_exterior',
-    'brandenburg_gate', 'buckingham', 'colosseum_exterior',
-    'grand_place_brussels', 'palace_of_westminster', 'st_peters_square',
-    'taj_mahal', 'temple_nara_japan'
-]
-test_sequences = [
-    # 'british_museum',
-    # 'florence_cathedral_side',
-    # 'lincoln_memorial_statue',
-    # 'milan_cathedral',
-    # 'mount_rushmore',
-    # 'reichstag',
-    # 'sagrada_familia',
-    # 'st_pauls_cathedral',
-    # 'united_states_capitol'
-]
-
-brown_test_sequences = ['notredame']
-
-# defines list of transformations applied to input patches
 
 
 def create_train_loader(cfg):
@@ -168,9 +139,9 @@ def train(cfg,
         out_p, p_p = model(img_p)
 
         if img_g.size(0) > 0:
-            out_g, _ = model(img_g)
+            out_g, p_g = model(img_g)
         else:
-            out_g = None
+            out_g, p_g = None, None
 
         loss, min_neg_idx = loss_HardNet_weighted(
             out_a,
@@ -187,7 +158,7 @@ def train(cfg,
             show_images([
                 p_a[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
                 p_p[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
-                p_p[min_neg_idx[tripletIDX], :, :, :].squeeze().data.cpu(
+                (torch.cat([p_p, p_g]) if p_g is not None else p_p)[min_neg_idx[tripletIDX], :, :, :].squeeze().data.cpu(
                 ).numpy() * 255
             ], cfg.LOGGING.IMGS_DIR + '/img_' + '.png')
 
@@ -398,31 +369,22 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
         fpr95_sum = 0
         for batch_idx, data in pbar:
             img_a, img_p, img_g = data
-            img_a_chunks = torch.split(img_a, cfg.TRAINING.TEST_BATCH_SIZE)
-            img_p_chunks = torch.split(img_p, cfg.TRAINING.TEST_BATCH_SIZE)
-            img_g_chunks = torch.split(img_g, cfg.TRAINING.TEST_BATCH_SIZE)
-            descriptors_a = []
-            descriptors_p = []
-            descriptors_g = []
-            assert len(img_a_chunks) == len(img_p_chunks) and len(img_a_chunks) == len(img_g_chunks)
-            for i in range(len(img_a_chunks)):
-                descriptors_a.append(model(img_a_chunks[i].to(device))[0].cpu())
-                descriptors_p.append(model(img_p_chunks[i].to(device))[0].cpu())
-                descriptors_g.append(model(img_g_chunks[i].to(device))[0].cpu())
-            out_a = torch.cat(descriptors_a)
-            out_p = torch.cat(descriptors_a)
-            out_g = torch.cat(descriptors_a)
+
+            out_a, _ = model(img_a.to(device))
+            out_p, _ = model(img_p.to(device))
+            out_g, _ = model(img_g.to(device))
 
             distances = distance_matrix_vector(out_a, torch.concat((out_p, out_g))).detach().cpu().numpy().flatten()
             label = torch.eye(out_a.size(0), out_p.size(0) + out_g.size(0)).cpu().numpy().flatten()
-            fpr95_num += distances.size
-            fpr95_sum += distances.size * ErrorRateAt95Recall(label, 1.0 / (distances + 1e-8))
-            pbar.set_description(logger_test_name +
-                                    ' Test Epoch: {} [{}/{} ({:.0f}%)]'.format(
-                                        epoch, batch_idx * len(label),
-                                        len(test_loader.dataset), 100. *
-                                        batch_idx / len(test_loader)))
+            fpr95_num += out_p.size(0)
+            fpr95_sum += out_p.size(0) * ErrorRateAt95Recall(label, 1.0 / (distances + 1e-8))
+            # pbar.set_description(logger_test_name +
+            #                         ' Test Epoch: {} [{}/{} ({:.0f}%)]'.format(
+            #                             epoch, batch_idx * len(label),
+            #                             len(test_loader.dataset), 100. *
+            #                             batch_idx / len(test_loader)))
         fpr95 = fpr95_sum / fpr95_num
+        print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(logger_test_name, fpr95))
     if (cfg.LOGGING.ENABLE_LOGGING):
         #logger.log_value(logger_test_name + ' fpr95', fpr95)
         file_logger.log_string(

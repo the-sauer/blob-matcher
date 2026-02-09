@@ -13,29 +13,16 @@
 # limitations under the License.
 
 import torch
-import torch.nn.init
 import torch.nn as nn
-import cv2
 import numpy as np
 import os
 import matplotlib
-matplotlib.use("agg")
 from matplotlib import pyplot as plt
 import seaborn as sns
-sns.set()
 
-# resize image to size 32x32
-cv2_scale36 = lambda x: cv2.resize(
-    x, dsize=(36, 36), interpolation=cv2.INTER_LINEAR)
-cv2_scale = lambda x: cv2.resize(
-    x, dsize=(32, 32), interpolation=cv2.INTER_LINEAR)
-cv2_scale_64 = lambda x: cv2.resize(
-    x, dsize=(64, 64), interpolation=cv2.INTER_LINEAR)
-np_reshape64 = lambda x: np.reshape(x, (64, 64, 1))
 
-# reshape image
-np_reshape = lambda x: np.reshape(x, (32, 32, 1))
-np_reshape_ = lambda x: np.reshape(x, (len(x), len(x[0]), 1))
+matplotlib.use("agg")
+sns.set_theme()
 
 
 def show_images(images, file_to_save, cols=1, titles=None):
