@@ -86,7 +86,7 @@ def create_test_loaders(cfg):
             shuffle=True,
             **kwargs
         )
-    } if os.path.basename(cfg.BLOBINATOR.DATASET_PATH).startswith("real") else {
+    } if os.path.basename(cfg.BLOBINATOR.DATASET_PATH) == "real" else {
         'name':
         'no_duplicated_blobs_validation',
         'dataloader':
@@ -141,7 +141,7 @@ def train(cfg,
         if img_g.size(0) > 0:
             out_g, p_g = model(img_g)
         else:
-            out_g = None
+            out_g, p_g = None, None
 
         loss, min_neg_idx = loss_HardNet_weighted(
             out_a,
@@ -158,7 +158,7 @@ def train(cfg,
             show_images([
                 p_a[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
                 p_p[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
-                torch.cat([p_p, p_g])[min_neg_idx[tripletIDX], :, :, :].squeeze().data.cpu(
+                (torch.cat([p_p, p_g]) if p_g is not None else p_p)[min_neg_idx[tripletIDX], :, :, :].squeeze().data.cpu(
                 ).numpy() * 255
             ], cfg.LOGGING.IMGS_DIR + '/img_' + '.png')
 
@@ -369,20 +369,10 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
         fpr95_sum = 0
         for batch_idx, data in pbar:
             img_a, img_p, img_g = data
-            img_a_chunks = torch.split(img_a, cfg.TRAINING.TEST_BATCH_SIZE)
-            img_p_chunks = torch.split(img_p, cfg.TRAINING.TEST_BATCH_SIZE)
-            img_g_chunks = torch.split(img_g, cfg.TRAINING.TEST_BATCH_SIZE)
-            descriptors_a = []
-            descriptors_p = []
-            descriptors_g = []
-            assert len(img_a_chunks) == len(img_p_chunks) and len(img_a_chunks) == len(img_g_chunks)
-            for i in range(len(img_a_chunks)):
-                descriptors_a.append(model(img_a_chunks[i].to(device))[0].cpu())
-                descriptors_p.append(model(img_p_chunks[i].to(device))[0].cpu())
-                descriptors_g.append(model(img_g_chunks[i].to(device))[0].cpu())
-            out_a = torch.cat(descriptors_a)
-            out_p = torch.cat(descriptors_a)
-            out_g = torch.cat(descriptors_a)
+
+            out_a, _ = torch.cat(img_a.to(device))
+            out_p, _ = torch.cat(img_p.to(device))
+            out_g, _ = torch.cat(img_g.to(device))
 
             distances = distance_matrix_vector(out_a, torch.concat((out_p, out_g))).detach().cpu().numpy().flatten()
             label = torch.eye(out_a.size(0), out_p.size(0) + out_g.size(0)).cpu().numpy().flatten()
