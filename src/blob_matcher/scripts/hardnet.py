@@ -370,20 +370,21 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
         for batch_idx, data in pbar:
             img_a, img_p, img_g = data
 
-            out_a, _ = torch.cat(img_a.to(device))
-            out_p, _ = torch.cat(img_p.to(device))
-            out_g, _ = torch.cat(img_g.to(device))
+            out_a, _ = model(img_a.to(device))
+            out_p, _ = model(img_p.to(device))
+            out_g, _ = model(img_g.to(device))
 
             distances = distance_matrix_vector(out_a, torch.concat((out_p, out_g))).detach().cpu().numpy().flatten()
             label = torch.eye(out_a.size(0), out_p.size(0) + out_g.size(0)).cpu().numpy().flatten()
-            fpr95_num += distances.size
-            fpr95_sum += distances.size * ErrorRateAt95Recall(label, 1.0 / (distances + 1e-8))
-            pbar.set_description(logger_test_name +
-                                    ' Test Epoch: {} [{}/{} ({:.0f}%)]'.format(
-                                        epoch, batch_idx * len(label),
-                                        len(test_loader.dataset), 100. *
-                                        batch_idx / len(test_loader)))
+            fpr95_num += out_p.size(0)
+            fpr95_sum += out_p.size(0) * ErrorRateAt95Recall(label, 1.0 / (distances + 1e-8))
+            # pbar.set_description(logger_test_name +
+            #                         ' Test Epoch: {} [{}/{} ({:.0f}%)]'.format(
+            #                             epoch, batch_idx * len(label),
+            #                             len(test_loader.dataset), 100. *
+            #                             batch_idx / len(test_loader)))
         fpr95 = fpr95_sum / fpr95_num
+        print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(logger_test_name, fpr95))
     if (cfg.LOGGING.ENABLE_LOGGING):
         #logger.log_value(logger_test_name + ' fpr95', fpr95)
         file_logger.log_string(
