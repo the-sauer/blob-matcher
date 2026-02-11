@@ -62,47 +62,14 @@ DATASETS: list[tuple[str, v2.Transform, dict[str, typing.Any], dict[str, typing.
         v2.Compose(
             [v2.ColorJitter(), v2.GaussianBlur(kernel_size=(5, 5)), v2.GaussianNoise()]
         ),
-        {},
+        {
+            "base_scale": 0.5
+        },
         {
             "location_aug": 0.05,
             "scale_aug": 0.05,
         },
     ),
-    (
-        "hard",
-        v2.Compose(
-            [
-                v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5),
-                v2.GaussianBlur(kernel_size=(7, 7)),
-                v2.GaussianNoise(),
-            ]
-        ),
-        {
-            "base_scale": 0.2,
-            "scaling_amplitude": 0.1,
-            "perspective_amplitude_x": 0.8,
-            "perspective_amplitude_y": 0.8,
-            "allow_artifacts": True,
-        },
-        {
-            "location_aug": 0.1,
-            "scale_aug": 0.1,
-        },
-    ),
-    # (
-    #     "very_hard",
-    #     v2.Compose([
-    #         v2.ColorJitter(),
-    #         v2.GaussianBlur(kernel_size=(11, 11)),
-    #         v2.GaussianNoise()
-    #     ]),
-    #     {
-    #         "base_scale": 0.2,
-    #         "scaling_amplitude": 0.5,
-    #         "perspective_amplitude_x": 1,
-    #         "perspective_amplitude_y": 4
-    #     }
-    # ),
 ]
 
 
@@ -301,7 +268,7 @@ def generate_dataset(
             list(map(ellipse_to_affine, garbage_keypoints))
         ).to(device)
 
-        for psf in [64, 96, 128]:
+        for psf in [96]:
             os.makedirs(
                 os.path.join(path, "patches", f"{int(psf)}", "anchors"), exist_ok=True
             )
@@ -386,7 +353,7 @@ def generate_dataset(
                     )
 
 
-def generate_real_dataset(homographies, cfg, path, validation_boards):
+def generate_real_dataset(homographies, cfg, path, validation_boards=[], test_boards=[]):
     augmentation = v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5)
     device = torch.device(
         "cuda"
@@ -396,7 +363,7 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
     print(device)
 
     for i, (image, board) in enumerate(homographies.keys()):
-        subdir = "validation" if board in validation_boards else "training"
+        subdir = "validation" if board in validation_boards else ("test" if board in test_boards else "training")
         img = (
             torchvision.io.decode_image(image, torchvision.io.ImageReadMode.GRAY)
             .to(device)
@@ -579,7 +546,7 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
             list(map(ellipse_to_affine, garbage_keypoints))
         ).to(device)
 
-        for psf in [64, 96, 128]:
+        for psf in [96]:
             os.makedirs(
                 os.path.join(path, subdir, "patches", f"{int(psf)}", "anchors"),
                 exist_ok=True,
@@ -714,7 +681,6 @@ def main():
     # torch.manual_seed(cfg.TRAINING.SEED)
     # np.random.seed(cfg.TRAINING.SEED)
 
-
     validation_split = 0.2
 
     boards = []
@@ -738,7 +704,7 @@ def main():
     )(os.walk(os.path.join("./data/backgrounds")))
     random.shuffle(background_filenames)
 
-    num_images_total = min(len(boards), len(background_filenames))
+    num_images_total = min(len(boards), len(background_filenames), 100)
     boards = boards[:num_images_total]
     background_filenames = background_filenames[:num_images_total]
 
@@ -801,7 +767,7 @@ def main():
             augmentation_args,
             is_validation=True,
         )
-    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
+    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"], ["042"])
 
 
 if __name__ == "__main__":
