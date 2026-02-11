@@ -386,7 +386,7 @@ def generate_dataset(
                     )
 
 
-def generate_real_dataset(homographies, cfg, path, validation_boards):
+def generate_real_dataset(homographies, cfg, path, validation_boards=[], test_boards=[]):
     augmentation = v2.ColorJitter(brightness=(0.3, 1), contrast=0.8, saturation=0.5)
     device = torch.device(
         "cuda"
@@ -396,7 +396,7 @@ def generate_real_dataset(homographies, cfg, path, validation_boards):
     print(device)
 
     for i, (image, board) in enumerate(homographies.keys()):
-        subdir = "validation" if board in validation_boards else "training"
+        subdir = "validation" if board in validation_boards else ("test" if board in test_boards else "training")
         img = (
             torchvision.io.decode_image(image, torchvision.io.ImageReadMode.GRAY)
             .to(device)
@@ -801,7 +801,7 @@ def main():
             augmentation_args,
             is_validation=True,
         )
-    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"])
+    generate_real_dataset(torch.load("real_homographies.pt"), cfg, "./data/datasets/new/real", ["3f9"], ["042"])
 
 
 if __name__ == "__main__":
