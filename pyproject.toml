@@ -24,6 +24,7 @@ dependencies = [
     "numpy >= 2.2.6",
     "pdf2image >= 1.17",
     "Pint >= 0.25",
+    "pytorch-metric-learning >= 2.9",
     "seaborn >= 0.13.2",
     "torch >= 2.8.0",
     "torchvision >= 0.23.0",
