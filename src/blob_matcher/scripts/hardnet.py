@@ -1,4 +1,5 @@
 # Copyright 2019 EPFL, Google LLC
+# Copyright 2025-2026 Hendrik Sauer
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +36,8 @@ import os
 
 
 import numpy as np
+from pytorch_metric_learning.distances import CosineSimilarity, DotProductSimilarity, LpDistance
+from pytorch_metric_learning.losses import NPairsLoss
 from tqdm import tqdm
 import torch
 import torch.optim as optim
@@ -47,7 +50,6 @@ from blob_matcher.hardnet.data import Augmentor, \
 from blob_matcher.hardnet.loggers import FileLogger
 from blob_matcher.hardnet.losses import distance_matrix_vector, loss_HardNet_weighted
 from blob_matcher.hardnet.models import HardNet
-from blob_matcher.hardnet.utils import show_images
 from blob_matcher.hardnet.eval_metrics import ErrorRateAt95Recall
 
 
@@ -132,35 +134,42 @@ def train(cfg,
 
         # forward-propagate input through network and get [batchSize x 1 x
         # resolution x resolution] output array
-        out_a, p_a = model(img_a)
+        out_a, _ = model(img_a)
 
         # forward-propagate input through network and get [batchSize x 1 x
         # resolution x resolution] output array
-        out_p, p_p = model(img_p)
+        out_p, _ = model(img_p)
 
         if img_g.size(0) > 0:
-            out_g, p_g = model(img_g)
+            out_g, _ = model(img_g)
         else:
-            out_g, p_g = None, None
+            out_g, _ = None, None
 
-        loss, min_neg_idx = loss_HardNet_weighted(
-            out_a,
-            out_p,
-            out_g,
-            anchor_swap=cfg.TRAINING.ANCHOR_SWAP,
-            margin=cfg.TRAINING.MARGIN,
-            batch_reduce=cfg.TRAINING.BATCH_REDUCE,
-            loss_type=cfg.TRAINING.LOSS)
-
-        # plot triplets (anchor, positive, hardest negative)
-        if batch_idx % 40 == 0:
-            tripletIDX = 2
-            show_images([
-                p_a[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
-                p_p[tripletIDX, :, :, :].squeeze().data.cpu().numpy() * 255,
-                (torch.cat([p_p, p_g]) if p_g is not None else p_p)[min_neg_idx[tripletIDX], :, :, :].squeeze().data.cpu(
-                ).numpy() * 255
-            ], cfg.LOGGING.IMGS_DIR + '/img_' + '.png')
+        if cfg.TRAINING.LOSS == 'triplet_margin':
+            loss, _ = loss_HardNet_weighted(
+                out_a,
+                out_p,
+                out_g,
+                anchor_swap=cfg.TRAINING.ANCHOR_SWAP,
+                margin=cfg.TRAINING.MARGIN,
+                batch_reduce=cfg.TRAINING.BATCH_REDUCE,
+                loss_type=cfg.TRAINING.LOSS
+            )
+        elif cfg.TRAINING.LOSS == 'npairs':
+            labels = torch.cat([
+                torch.arange(out_a.size(0)),
+                torch.arange(out_p.size(0)),
+                torch.arange(out_p.size(0), out_p.size(0) + out_g.size(0))
+            ]).to(device)
+            if cfg.LOSS.DISTANCE == 'euclidean':
+                distance = LpDistance(p=2)
+            elif cfg.LOSS.DISTANCE == 'cosine':
+                distance = CosineSimilarity()
+            elif cfg.LOSS.DISTANCE == 'dot_product_similarity':
+                distance = DotProductSimilarity()
+            else:
+                raise ValueError(f"Unknown distance for npairs loss: {cfg.LOSS.DISTANCE}")
+            loss = NPairsLoss(distance=distance)(torch.cat([out_a, out_p, out_g]), labels)
 
         optimizer.zero_grad()
         loss.backward()
