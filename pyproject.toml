@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blob-matcher"
-version = "0.2.0"
+version = "0.3.0"
 authors = [
     { name="Hendrik Sauer", email="hendrik-sauer@mailbox.org" },
 ]
