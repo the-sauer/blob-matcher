@@ -29,7 +29,7 @@ class L2Norm(nn.Module):
 
 
 class HardNet(nn.Module):
-    def __init__(self, patch_size=32):
+    def __init__(self, patch_size=32, shallow=False, slim=False):
         super(HardNet, self).__init__()
 
         # model processing patches of size [32 x 32] and giving description vectors of length 2**7
@@ -47,31 +47,55 @@ class HardNet(nn.Module):
             pool = 32
         else:
             raise ValueError(f"Unsupported patch size {patch_size}")
-
-        self.features = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
-            nn.BatchNorm2d(32, affine=False),
-            nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=kernel_size, padding=padding, bias=False),            # 32x32
-            nn.BatchNorm2d(32, affine=False),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=kernel_size, stride=2, padding=padding, bias=False),  # 16x16
-            nn.BatchNorm2d(64, affine=False),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=kernel_size, padding=padding, bias=False),            # 16x16
-            nn.BatchNorm2d(64, affine=False),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=kernel_size, stride=2, padding=padding, bias=False), # 8x8
-            nn.BatchNorm2d(128, affine=False),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=kernel_size, padding=padding, bias=False),          # 8x8
-            nn.BatchNorm2d(128, affine=False),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.MaxPool2d(kernel_size=(pool, 1)),
-            nn.Conv2d(128, 128, (1, pool), bias=False),
-            nn.BatchNorm2d(128, affine=False),
-        )
+        
+        depths = [16, 32, 64] if slim else [32, 64, 128]
+        if shallow:
+            self.features = nn.Sequential(
+                nn.Conv2d(1, depths[0], kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
+                nn.BatchNorm2d(depths[0], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),            # 32x32
+                nn.BatchNorm2d(depths[0], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[0], depths[1], kernel_size=kernel_size, stride=2, padding=padding, bias=False),  # 16x16
+                nn.BatchNorm2d(depths[1], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[1], depths[2], kernel_size=kernel_size, stride=2, padding=padding, bias=False), # 8x8
+                nn.BatchNorm2d(depths[2], affine=False),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.MaxPool2d(kernel_size=(pool, 1)),
+                nn.Conv2d(depths[2], 128, (1, pool), bias=False),
+                nn.BatchNorm2d(128, affine=False),
+            )
+        else:
+            self.features = nn.Sequential(
+                nn.Conv2d(1, depths[0], kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
+                nn.BatchNorm2d(depths[0], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
+                nn.BatchNorm2d(depths[0], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),            # 32x32
+                nn.BatchNorm2d(depths[0], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[0], depths[1], kernel_size=kernel_size, stride=2, padding=padding, bias=False),  # 16x16
+                nn.BatchNorm2d(depths[1], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[1], depths[1], kernel_size=kernel_size, padding=padding, bias=False),            # 16x16
+                nn.BatchNorm2d(depths[1], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[1], depths[2], kernel_size=kernel_size, stride=2, padding=padding, bias=False), # 8x8
+                nn.BatchNorm2d(depths[2], affine=False),
+                nn.ReLU(),
+                nn.Conv2d(depths[2], depths[2], kernel_size=kernel_size, padding=padding, bias=False),          # 8x8
+                nn.BatchNorm2d(depths[2], affine=False),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.MaxPool2d(kernel_size=(pool, 1)),
+                nn.Conv2d(depths[2], 128, (1, pool), bias=False),
+                nn.BatchNorm2d(128, affine=False),
+            )
 
         # initialize weights
         self.features.apply(weights_init)
