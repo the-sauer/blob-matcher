@@ -67,6 +67,9 @@ _C.TRAINING.TRAINING_SET = 'colmap_dataset'
 
 _C.TRAINING.LOSS = 'triplet_margin'
 
+# Only applied if loss is 'npairs'
+_C.TRAINING.LOSS_DISTANCE = 'euclidean'     # Can be 'euclidean', 'cosine' or 'dot_product_similarity'
+
 _C.TRAINING.BATCH_REDUCE = 'min'
 
 _C.TRAINING.NUM_WORKERS = 8

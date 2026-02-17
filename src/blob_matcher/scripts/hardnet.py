@@ -36,7 +36,7 @@ import os
 
 
 import numpy as np
-from pytorch_metric_learning.distances import CosineSimilarity
+from pytorch_metric_learning.distances import CosineSimilarity, DotProductSimilarity, LpDistance
 from pytorch_metric_learning.losses import NPairsLoss
 from tqdm import tqdm
 import torch
@@ -48,7 +48,7 @@ from blob_matcher.hardnet.data import Augmentor, \
     BlobinatorValidationData, \
     BlobinatorValidationPreBatchedData
 from blob_matcher.hardnet.loggers import FileLogger
-from blob_matcher.hardnet.losses import distance_matrix_vector
+from blob_matcher.hardnet.losses import distance_matrix_vector, loss_HardNet_weighted
 from blob_matcher.hardnet.models import HardNet
 from blob_matcher.hardnet.eval_metrics import ErrorRateAt95Recall
 
@@ -145,12 +145,31 @@ def train(cfg,
         else:
             out_g, _ = None, None
 
-        labels = torch.cat([
-            torch.arange(out_a.size(0)),
-            torch.arange(out_p.size(0)),
-            torch.arange(out_p.size(0), out_p.size(0) + out_g.size(0))
-        ]).to(device)
-        loss = NPairsLoss(distance=CosineSimilarity())(torch.cat([out_a, out_p, out_g]), labels)
+        if cfg.TRAINING.LOSS == 'triplet_margin':
+            loss, _ = loss_HardNet_weighted(
+                out_a,
+                out_p,
+                out_g,
+                anchor_swap=cfg.TRAINING.ANCHOR_SWAP,
+                margin=cfg.TRAINING.MARGIN,
+                batch_reduce=cfg.TRAINING.BATCH_REDUCE,
+                loss_type=cfg.TRAINING.LOSS
+            )
+        elif cfg.TRAINING.LOSS == 'npairs':
+            labels = torch.cat([
+                torch.arange(out_a.size(0)),
+                torch.arange(out_p.size(0)),
+                torch.arange(out_p.size(0), out_p.size(0) + out_g.size(0))
+            ]).to(device)
+            if cfg.LOSS.DISTANCE == 'euclidean':
+                distance = LpDistance(p=2)
+            elif cfg.LOSS.DISTANCE == 'cosine':
+                distance = CosineSimilarity()
+            elif cfg.LOSS.DISTANCE == 'dot_product_similarity':
+                distance = DotProductSimilarity()
+            else:
+                raise ValueError(f"Unknown distance for npairs loss: {cfg.LOSS.DISTANCE}")
+            loss = NPairsLoss(distance=distance)(torch.cat([out_a, out_p, out_g]), labels)
 
         optimizer.zero_grad()
         loss.backward()
