@@ -208,7 +208,7 @@ def train(cfg,
 
             pbar.set_description(
                 'Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                    epoch, batch_idx * img_a.size(0),
+                    epoch, batch_idx * b_size,
                     len(train_loader.dataset),
                     100. * batch_idx / len(train_loader), loss.item()))
 

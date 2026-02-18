@@ -76,9 +76,6 @@ class HardNet(nn.Module):
                 nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
                 nn.BatchNorm2d(depths[0], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),            # 32x32
-                nn.BatchNorm2d(depths[0], affine=False),
-                nn.ReLU(),
                 nn.Conv2d(depths[0], depths[1], kernel_size=kernel_size, stride=2, padding=padding, bias=False),  # 16x16
                 nn.BatchNorm2d(depths[1], affine=False),
                 nn.ReLU(),
