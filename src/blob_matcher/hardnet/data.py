@@ -326,7 +326,7 @@ class BlobTrackData(torch.utils.data.Dataset):
                 patches, _, _ = _load_all_sequences(f, self._sequences)
                 patch = patches[self._indices[idx]]
 
-        patch = torch.from_numpy(patch).unsqueeze(0)  # (1, P, P)
+        patch = torch.from_numpy(patch).unsqueeze(0).transpose(1, 2)  # (1, P, P)
         label = self.labels[idx]
         return patch, label
 
@@ -358,7 +358,7 @@ class BlobUntrackedData(torch.utils.data.Dataset):
         return len(self.patches)
 
     def __getitem__(self, idx):
-        return torch.from_numpy(self.patches[idx]).unsqueeze(0)
+        return torch.from_numpy(self.patches[idx]).unsqueeze(0).transpose(1, 2)
 
 
 if __name__ == "__main__":
