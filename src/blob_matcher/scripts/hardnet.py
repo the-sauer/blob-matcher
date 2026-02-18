@@ -46,7 +46,8 @@ import torch.optim as optim
 from blob_matcher.hardnet.data import Augmentor, \
     BlobinatorTrainingData, \
     BlobinatorValidationData, \
-    BlobinatorValidationPreBatchedData
+    BlobinatorValidationPreBatchedData, \
+    BlobTrackData
 from blob_matcher.hardnet.loggers import FileLogger
 from blob_matcher.hardnet.losses import distance_matrix_vector, loss_HardNet_weighted
 from blob_matcher.hardnet.models import HardNet
@@ -59,8 +60,12 @@ def create_train_loader(cfg):
         'num_workers': cfg.TRAINING.NUM_WORKERS,
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
-
-    transformer_dataset = BlobinatorTrainingData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training"))
+    if os.path.exists(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "tracks.tracks")):
+        transformer_dataset = BlobTrackData(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "tracks.tracks"), sequences=cfg.TRAINING.SEQUENCES)
+    elif os.path.isdir(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training")):
+        transformer_dataset = BlobinatorTrainingData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training"))
+    else:
+        raise ValueError(f"Training data not found at {os.path.join(cfg.BLOBINATOR.DATASET_PATH)}")
     # transformer_dataset.preprocess()
     train_loader = torch.utils.data.DataLoader(
         transformer_dataset,
@@ -78,27 +83,40 @@ def create_test_loaders(cfg):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
 
-    val_loaders = [{
-        'name':
-        'duplicated_blobs_validation',
-        'dataloader':
-        torch.utils.data.DataLoader(
-            BlobinatorValidationPreBatchedData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation")),
-            batch_size=None,
-            shuffle=True,
-            **kwargs
-        )
-    } if os.path.basename(cfg.BLOBINATOR.DATASET_PATH) == "real" else {
-        'name':
-        'no_duplicated_blobs_validation',
-        'dataloader':
-        torch.utils.data.DataLoader(
-            BlobinatorValidationData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation")),
-            batch_size=cfg.TEST.TEST_BATCH_SIZE,
-            shuffle=True,
-            **kwargs
-        )
-    }]
+    if os.path.isdir(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "validation")):
+        val_loaders = [{
+            'name':
+            'duplicated_blobs_validation',
+            'dataloader':
+            torch.utils.data.DataLoader(
+                BlobinatorValidationPreBatchedData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation")),
+                batch_size=None,
+                shuffle=True,
+                **kwargs
+            )
+        } if os.path.basename(cfg.BLOBINATOR.DATASET_PATH) == "real" else {
+            'name':
+            'no_duplicated_blobs_validation',
+            'dataloader':
+            torch.utils.data.DataLoader(
+                BlobinatorValidationData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "validation")),
+                batch_size=cfg.TEST.TEST_BATCH_SIZE,
+                shuffle=True,
+                **kwargs
+            )
+        }]
+    elif os.path.exists(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "tracks.tracks")):
+        val_loaders = [{
+            "name": "track_validation",
+            "dataloader": torch.utils.data.DataLoader(
+                BlobTrackData(os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "tracks.tracks"), sequences=cfg.VALIDATION.SEQUENCES),
+                batch_size=cfg.TEST.TEST_BATCH_SIZE,
+                shuffle=True,
+                **kwargs
+            )
+        }]
+    else:
+        raise ValueError(f"Validation data not found at {os.path.join(cfg.BLOBINATOR.DATASET_PATH)}")
 
     test_loaders = None
     return val_loaders, test_loaders
@@ -125,25 +143,36 @@ def train(cfg,
     for batch_idx, data in enumerate(
             train_loader):  # iterate over batches of train_loader
         # print(batch_idx)
+        if isinstance(train_loader.dataset, BlobinatorTrainingData):
+            img_a, img_p, img_g, garbage_available = data
+            img_g = img_g[garbage_available]
+            img_a = img_a.to(device)
+            img_p = img_p.to(device)
+            img_g = img_g.to(device)
+            b_size = img_a.size(0)
 
-        img_a, img_p, img_g, garbage_available = data
-        img_g = img_g[garbage_available]
-        img_a = img_a.to(device)
-        img_p = img_p.to(device)
-        img_g = img_g.to(device)
+            # forward-propagate input through network and get [batchSize x 1 x
+            # resolution x resolution] output array
+            out_a, _ = model(img_a)
 
-        # forward-propagate input through network and get [batchSize x 1 x
-        # resolution x resolution] output array
-        out_a, _ = model(img_a)
+            # forward-propagate input through network and get [batchSize x 1 x
+            # resolution x resolution] output array
+            out_p, _ = model(img_p)
 
-        # forward-propagate input through network and get [batchSize x 1 x
-        # resolution x resolution] output array
-        out_p, _ = model(img_p)
+            if img_g.size(0) > 0:
+                out_g, _ = model(img_g)
+            else:
+                out_g, _ = None, None
 
-        if img_g.size(0) > 0:
-            out_g, _ = model(img_g)
-        else:
-            out_g, _ = None, None
+            labels = torch.cat([
+                torch.arange(out_a.size(0)),
+                torch.arange(out_p.size(0)),
+                torch.arange(out_p.size(0), out_p.size(0) + out_g.size(0))
+            ]).to(device)
+        elif isinstance(train_loader.dataset, BlobTrackData):
+            patches, labels = data
+            b_size = patches.size(0)
+            out, _ = model(patches.to(device))
 
         if cfg.TRAINING.LOSS == 'triplet_margin':
             loss, _ = loss_HardNet_weighted(
@@ -156,20 +185,17 @@ def train(cfg,
                 loss_type=cfg.TRAINING.LOSS
             )
         elif cfg.TRAINING.LOSS == 'npairs':
-            labels = torch.cat([
-                torch.arange(out_a.size(0)),
-                torch.arange(out_p.size(0)),
-                torch.arange(out_p.size(0), out_p.size(0) + out_g.size(0))
-            ]).to(device)
-            if cfg.LOSS.DISTANCE == 'euclidean':
+            if cfg.TRAINING.LOSS_DISTANCE == 'euclidean':
                 distance = LpDistance(p=2)
-            elif cfg.LOSS.DISTANCE == 'cosine':
+            elif cfg.TRAINING.LOSS_DISTANCE == 'cosine':
                 distance = CosineSimilarity()
-            elif cfg.LOSS.DISTANCE == 'dot_product_similarity':
+            elif cfg.TRAINING.LOSS_DISTANCE == 'dot_product_similarity':
                 distance = DotProductSimilarity()
             else:
-                raise ValueError(f"Unknown distance for npairs loss: {cfg.LOSS.DISTANCE}")
-            loss = NPairsLoss(distance=distance)(torch.cat([out_a, out_p, out_g]), labels)
+                raise ValueError(f"Unknown distance for npairs loss: {cfg.TRAINING.LOSS_DISTANCE}")
+            loss = NPairsLoss(distance=distance)(out, labels)
+        else:
+            raise ValueError(f"Unknown loss: {cfg.TRAINING.LOSS}")
 
         optimizer.zero_grad()
         loss.backward()
@@ -373,7 +399,7 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
         fpr95 = ErrorRateAt95Recall(labels, 1.0 / (distances + 1e-8))
         print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(
             logger_test_name, fpr95))
-    else:
+    elif isinstance(test_loader.dataset, BlobinatorValidationPreBatchedData):
         fpr95_num = 0
         fpr95_sum = 0
         for batch_idx, data in pbar:
@@ -394,6 +420,24 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
             #                             batch_idx / len(test_loader)))
         fpr95 = fpr95_sum / fpr95_num
         print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(logger_test_name, fpr95))
+    elif isinstance(test_loader.dataset, BlobTrackData):
+        labels, distances = [], []
+        for batch_idx, data in pbar:
+            patches, l = data
+            out, _ = model(patches.to(device))
+            dists = distance_matrix_vector(out, out).detach().cpu().numpy()
+            dists = dists[~np.eye(dists.shape[0], dtype=bool)].flatten()
+            l = (l.unsqueeze(0).expand(out.size(0), -1) == l.unsqueeze(1).expand(-1, out.size(0))).float().cpu().numpy()
+            l = l[~np.eye(l.shape[0], dtype=bool)].flatten()
+            labels.append(l)
+            distances.append(dists)
+        labels = np.concatenate(labels, axis=0)
+        distances = np.concatenate(distances, axis=0)
+        fpr95 = ErrorRateAt95Recall(labels, 1.0 / (distances + 1e-8))
+        print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(logger_test_name, fpr95))
+    else:
+        raise ValueError(f"Unknown dataset type for testing: {type(test_loader.dataset)}")
+
     if (cfg.LOGGING.ENABLE_LOGGING):
         #logger.log_value(logger_test_name + ' fpr95', fpr95)
         file_logger.log_string(
