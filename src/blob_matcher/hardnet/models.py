@@ -1,5 +1,5 @@
 # Copyright 2019 EPFL, Google LLC
-# Copyright 2025 Hendrik Sauer
+# Copyright 2025-2026 Hendrik Sauer
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,20 +47,20 @@ class HardNet(nn.Module):
             pool = 32
         else:
             raise ValueError(f"Unsupported patch size {patch_size}")
-        
+
         depths = [16, 32, 64] if slim else [32, 64, 128]
         if shallow:
             self.features = nn.Sequential(
-                nn.Conv2d(1, depths[0], kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
+                nn.Conv2d(1, depths[0], kernel_size=kernel_size, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[0], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),            # 32x32
+                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[0], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[0], depths[1], kernel_size=kernel_size, stride=2, padding=padding, bias=False),  # 16x16
+                nn.Conv2d(depths[0], depths[1], kernel_size=kernel_size, stride=2, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[1], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[1], depths[2], kernel_size=kernel_size, stride=2, padding=padding, bias=False), # 8x8
+                nn.Conv2d(depths[1], depths[2], kernel_size=kernel_size, stride=2, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[2], affine=False),
                 nn.ReLU(),
                 nn.Dropout(0.1),
@@ -70,22 +70,22 @@ class HardNet(nn.Module):
             )
         else:
             self.features = nn.Sequential(
-                nn.Conv2d(1, depths[0], kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
+                nn.Conv2d(1, depths[0], kernel_size=kernel_size, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[0], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),             # 32x32
+                nn.Conv2d(depths[0], depths[0], kernel_size=kernel_size, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[0], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[0], depths[1], kernel_size=kernel_size, stride=2, padding=padding, bias=False),  # 16x16
+                nn.Conv2d(depths[0], depths[1], kernel_size=kernel_size, stride=2, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[1], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[1], depths[1], kernel_size=kernel_size, padding=padding, bias=False),            # 16x16
+                nn.Conv2d(depths[1], depths[1], kernel_size=kernel_size, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[1], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[1], depths[2], kernel_size=kernel_size, stride=2, padding=padding, bias=False), # 8x8
+                nn.Conv2d(depths[1], depths[2], kernel_size=kernel_size, stride=2, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[2], affine=False),
                 nn.ReLU(),
-                nn.Conv2d(depths[2], depths[2], kernel_size=kernel_size, padding=padding, bias=False),          # 8x8
+                nn.Conv2d(depths[2], depths[2], kernel_size=kernel_size, padding=padding, bias=False),
                 nn.BatchNorm2d(depths[2], affine=False),
                 nn.ReLU(),
                 nn.Dropout(0.1),
@@ -103,7 +103,7 @@ class HardNet(nn.Module):
         mp = torch.mean(flat, dim=1)
         sp = torch.std(flat, dim=1) + 1e-7
         return ((x - mp.detach().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(x)) /
-            sp.detach().unsqueeze(-1).unsqueeze(-1).unsqueeze(1).expand_as(x))
+                sp.detach().unsqueeze(-1).unsqueeze(-1).unsqueeze(1).expand_as(x))
 
     # function to forward-propagate inputs through the network
     def forward(self, patches):
