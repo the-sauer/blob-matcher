@@ -375,10 +375,9 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
 
             num_tests += len(out_a)
 
-            dists = torch.sqrt(torch.sum((out_a - out_p)**2,
-                                        1))  # euclidean distance
-            distances.extend(dists.data.cpu().numpy().reshape(-1, 1))
-            ll = label.data.cpu().numpy().reshape(-1, 1)
+            dists = torch.sqrt(torch.sum((out_a - out_p)**2, 1))  # euclidean distance
+            distances.extend(dists.data.reshape(-1, 1))
+            ll = label.data.reshape(-1, 1)
             labels.extend(ll)
 
             if batch_idx % cfg.LOGGING.LOG_INTERVAL == 0:
@@ -389,22 +388,19 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
                                         batch_idx / len(test_loader)))
         # compute statistics
         print('Number of test samples: {}'.format(num_tests))
-        labels = np.vstack(labels).reshape(num_tests)
-        distances = np.vstack(distances).reshape(num_tests)
+        labels = torch.vstack(labels).reshape(num_tests)
+        distances = torch.vstack(distances).reshape(num_tests)
         if cfg.TEST.ENABLE_ORIENTATION_FILTERING:
 
-            positive_indices = np.where(labels == 1)[0]
-            negative_indices = np.where(labels == 0)[0]
+            positive_indices = torch.where(labels == 1)[0]
+            negative_indices = torch.where(labels == 0)[0]
 
             # to get random same negatives, not to omit any particular sequence
-            random.Random(42).shuffle(negative_indices)
-
+            random.Random(42).shuffle(negative_indices.tolist())
             negative_indices = negative_indices[0:len(positive_indices)]
 
-            labels = np.concatenate(
-                [labels[positive_indices], labels[negative_indices]])
-            distances = np.concatenate(
-                [distances[positive_indices], distances[negative_indices]])
+            labels = torch.cat([labels[positive_indices], labels[negative_indices]])
+            distances = torch.cat([distances[positive_indices], distances[negative_indices]])
 
         fpr95 = ErrorRateAt95Recall(labels, 1.0 / (distances + 1e-8))
         print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(
@@ -419,8 +415,8 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
             out_p, _ = model(img_p.to(device))
             out_g, _ = model(img_g.to(device))
 
-            distances = distance_matrix_vector(out_a, torch.concat((out_p, out_g))).detach().cpu().numpy().flatten()
-            label = torch.eye(out_a.size(0), out_p.size(0) + out_g.size(0)).cpu().numpy().flatten()
+            distances = distance_matrix_vector(out_a, torch.concat((out_p, out_g))).detach().flatten()
+            label = torch.eye(out_a.size(0), out_p.size(0) + out_g.size(0)).to(device).flatten()
             fpr95_num += out_p.size(0)
             fpr95_sum += out_p.size(0) * ErrorRateAt95Recall(label, 1.0 / (distances + 1e-8))
             # pbar.set_description(logger_test_name +
@@ -435,14 +431,14 @@ def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_tes
         for batch_idx, data in pbar:
             patches, l = data
             out, _ = model(patches.to(device))
-            dists = distance_matrix_vector(out, out).detach().cpu().numpy()
-            dists = dists[~np.eye(dists.shape[0], dtype=bool)].flatten()
-            l = (l.unsqueeze(0).expand(out.size(0), -1) == l.unsqueeze(1).expand(-1, out.size(0))).float().cpu().numpy()
-            l = l[~np.eye(l.shape[0], dtype=bool)].flatten()
+            dists = distance_matrix_vector(out, out).detach()
+            dists = dists[~torch.eye(dists.shape[0], dtype=bool)].flatten()
+            l = (l.unsqueeze(0).expand(out.size(0), -1) == l.unsqueeze(1).expand(-1, out.size(0))).float().detach()
+            l = l[~torch.eye(l.shape[0], dtype=bool)].flatten()
             labels.append(l)
             distances.append(dists)
-        labels = np.concatenate(labels, axis=0)
-        distances = np.concatenate(distances, axis=0)
+        labels = torch.cat(labels, dim=0).to(device)
+        distances = torch.cat(distances, dim=0).to(device)
         fpr95 = ErrorRateAt95Recall(labels, 1.0 / (distances + 1e-8))
         print('\33[91m{} Test set: Accuracy(FPR95): {:.8f}\n\33[0m'.format(logger_test_name, fpr95))
     else:
