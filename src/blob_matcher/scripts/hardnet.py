@@ -37,7 +37,7 @@ import os
 
 import numpy as np
 from pytorch_metric_learning.distances import CosineSimilarity, DotProductSimilarity, LpDistance
-from pytorch_metric_learning.losses import NPairsLoss
+from pytorch_metric_learning.losses import NPairsLoss, SupConLoss
 from tqdm import tqdm
 import torch
 import torch.optim as optim
@@ -194,6 +194,16 @@ def train(cfg,
             else:
                 raise ValueError(f"Unknown distance for npairs loss: {cfg.TRAINING.LOSS_DISTANCE}")
             loss = NPairsLoss(distance=distance)(out, labels)
+        elif cfg.TRAINING.LOSS == 'supcon':
+            if cfg.TRAINING.LOSS_DISTANCE == 'euclidean':
+                distance = LpDistance(p=2)
+            elif cfg.TRAINING.LOSS_DISTANCE == 'cosine':
+                distance = CosineSimilarity()
+            elif cfg.TRAINING.LOSS_DISTANCE == 'dot_product_similarity':
+                distance = DotProductSimilarity()
+            else:
+                raise ValueError(f"Unknown distance for npairs loss: {cfg.TRAINING.LOSS_DISTANCE}")
+            loss = SupConLoss(distance=distance)(out, labels)
         else:
             raise ValueError(f"Unknown loss: {cfg.TRAINING.LOSS}")
 
