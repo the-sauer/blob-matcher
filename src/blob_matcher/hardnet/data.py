@@ -270,6 +270,21 @@ def _load_all_sequences(f, sequences=None):
     return patches, track_ids, track_lengths
 
 
+def load_untracked_patches(f, sequences=None):
+    seqs = f["sequences"]
+    seq_names = sequences if sequences is not None else list(seqs.keys())
+    parts = []
+    for name in seq_names:
+        sg = seqs[name]
+        if "untracked" in sg:
+            parts.append(sg["untracked/patches"][:])
+    if parts:
+        patches = np.concatenate(parts)
+    else:
+        patches = np.empty((0, 64, 64), dtype=np.float32)
+    return patches
+
+
 class BlobTrackData(torch.utils.data.Dataset):
     """Dataset of canonicalized blob patches labeled by track identity.
 
@@ -282,7 +297,7 @@ class BlobTrackData(torch.utils.data.Dataset):
     """
 
     def __init__(self, h5_path, min_track_length=2, load_into_memory=True,
-                 sequences=None):
+                 sequences=None, include_untracked=False, max_untracked_to_tracked_ratio=1.0):
         with h5py.File(h5_path, "r") as f:
             all_patches, track_ids, track_lengths = _load_all_sequences(f, sequences)
 
@@ -296,6 +311,8 @@ class BlobTrackData(torch.utils.data.Dataset):
 
             if load_into_memory:
                 self.patches = all_patches[mask]
+                if include_untracked:
+                    self.untracked_patches = load_untracked_patches(f, sequences)[:int(len(self.patches) * max_untracked_to_tracked_ratio)] if include_untracked else None
             else:
                 self._h5_path = h5_path
                 self._sequences = sequences
@@ -306,8 +323,13 @@ class BlobTrackData(torch.utils.data.Dataset):
 
         # Remap to contiguous 0-based labels
         unique, inverse = np.unique(self._raw_labels, return_inverse=True)
-        self.labels = inverse.astype(np.int64)
+        self.labels = inverse.astype(np.int32)
         self.n_classes = len(unique)
+        if include_untracked:
+            self.labels = np.concatenate([
+                self.labels,
+                np.arange(self.n_classes, self.n_classes + len(self.untracked_patches), dtype=self.labels.dtype)
+            ])
 
         n = len(self.labels)
         print(
@@ -320,7 +342,10 @@ class BlobTrackData(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         if self.patches is not None:
-            patch = self.patches[idx]  # (P, P) float32
+            if idx >= self.patches.shape[0]:
+                patch = self.untracked_patches[idx - self.patches.shape[0]]
+            else:
+                patch = self.patches[idx]  # (P, P) float32
         else:
             with h5py.File(self._h5_path, "r") as f:
                 patches, _, _ = _load_all_sequences(f, self._sequences)
@@ -329,36 +354,6 @@ class BlobTrackData(torch.utils.data.Dataset):
         patch = torch.from_numpy(patch).unsqueeze(0).transpose(1, 2)  # (1, P, P)
         label = self.labels[idx]
         return patch, label
-
-
-class BlobUntrackedData(torch.utils.data.Dataset):
-    """Optional dataset of untracked patches for distractor injection.
-
-    Each item returns a (1, P, P) float32 tensor with no label.
-    Use these as additional negatives during training.
-    Loads all sequences by default; pass `sequence="name"` for one.
-    """
-
-    def __init__(self, h5_path, sequence=None):
-        with h5py.File(h5_path, "r") as f:
-            seqs = f["sequences"]
-            seq_names = [sequence] if sequence is not None else list(seqs.keys())
-            parts = []
-            for name in seq_names:
-                sg = seqs[name]
-                if "untracked" in sg:
-                    parts.append(sg["untracked/patches"][:])
-            if parts:
-                self.patches = np.concatenate(parts)
-            else:
-                self.patches = np.empty((0, 64, 64), dtype=np.float32)
-        print(f"BlobUntracked: {len(self.patches)} patches")
-
-    def __len__(self):
-        return len(self.patches)
-
-    def __getitem__(self, idx):
-        return torch.from_numpy(self.patches[idx]).unsqueeze(0).transpose(1, 2)
 
 
 if __name__ == "__main__":

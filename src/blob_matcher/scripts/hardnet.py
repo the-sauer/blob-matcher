@@ -61,7 +61,7 @@ def create_train_loader(cfg):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
     if os.path.exists(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "tracks.tracks")):
-        transformer_dataset = BlobTrackData(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "tracks.tracks"), sequences=cfg.TRAINING.SEQUENCES)
+        transformer_dataset = BlobTrackData(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "tracks.tracks"), sequences=cfg.TRAINING.SEQUENCES, include_untracked=True)
     elif os.path.isdir(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training")):
         transformer_dataset = BlobinatorTrainingData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training"))
     else:
@@ -109,7 +109,7 @@ def create_test_loaders(cfg):
         val_loaders = [{
             "name": "track_validation",
             "dataloader": torch.utils.data.DataLoader(
-                BlobTrackData(os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "tracks.tracks"), sequences=cfg.VALIDATION.SEQUENCES),
+                BlobTrackData(os.path.join(cfg.BLOBINATOR.DATASET_PATH,  "tracks.tracks"), sequences=cfg.VALIDATION.SEQUENCES, include_untracked=True),
                 batch_size=cfg.TEST.TEST_BATCH_SIZE,
                 shuffle=True,
                 **kwargs
