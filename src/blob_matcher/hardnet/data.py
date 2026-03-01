@@ -17,7 +17,9 @@ import os
 import re
 
 import h5py
+from matplotlib import pyplot as plt
 import numpy as np
+import PIL
 import torch
 import torchvision
 
@@ -296,8 +298,16 @@ class BlobTrackData(torch.utils.data.Dataset):
     Loads all sequences by default; pass `sequence="name"` for one.
     """
 
-    def __init__(self, h5_path, min_track_length=2, load_into_memory=True,
-                 sequences=None, include_untracked=False, max_untracked_to_tracked_ratio=1.0):
+    def __init__(
+        self,
+        h5_path,
+        min_track_length=2,
+        load_into_memory=True,
+        sequences=None,
+        include_untracked=False,
+        max_untracked_to_tracked_ratio=1.0,
+        garbage_path=None
+    ):
         with h5py.File(h5_path, "r") as f:
             all_patches, track_ids, track_lengths = _load_all_sequences(f, sequences)
 
@@ -312,7 +322,27 @@ class BlobTrackData(torch.utils.data.Dataset):
             if load_into_memory:
                 self.patches = all_patches[mask]
                 if include_untracked:
-                    self.untracked_patches = load_untracked_patches(f, sequences)[:int(len(self.patches) * max_untracked_to_tracked_ratio)] if include_untracked else None
+                    self.untracked_patches = load_untracked_patches(f, sequences)
+                    if garbage_path:
+                        if garbage_path.endswith(".npy"):
+                            self.untracked_patches = np.concat([
+                                self.untracked_patches,
+                                np.squeeze(np.load(garbage_path), axis=1)
+                            ])
+                        else:
+                            self.untracked_patches = np.concat([
+                                self.untracked_patches,
+                                np.stack(list(map(
+                                    lambda p: np.array(PIL.Image.open(p).getdata()),
+                                    map(
+                                        lambda p: os.path.join(garbage_path, p),
+                                        os.listdir(garbage_path)
+                                    )
+                                )))
+                            ])
+                        np.random.shuffle(self.untracked_patches)
+
+                self.untracked_patches = self.untracked_patches[:int(len(self.patches) * max_untracked_to_tracked_ratio)] if include_untracked else None
             else:
                 self._h5_path = h5_path
                 self._sequences = sequences

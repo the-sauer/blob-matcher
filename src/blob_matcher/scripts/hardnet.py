@@ -109,7 +109,7 @@ def create_test_loaders(cfg):
         val_loaders = [{
             "name": "track_validation",
             "dataloader": torch.utils.data.DataLoader(
-                BlobTrackData(cfg.BLOBINATOR.DATASET_PATH, sequences=cfg.VALIDATION.SEQUENCES, include_untracked=True),
+                BlobTrackData(cfg.BLOBINATOR.DATASET_PATH, sequences=cfg.VALIDATION.SEQUENCES, include_untracked=True, garbage_path=os.path.join(os.path.dirname(cfg.BLOBINATOR.DATASET_PATH), "val_garbage.npy")),
                 batch_size=cfg.TEST.TEST_BATCH_SIZE,
                 shuffle=True,
                 **kwargs
@@ -319,36 +319,8 @@ def filter_orientation(out_a, out_p, label, theta_a, theta_p, orientCorrect,
 def test(cfg, test_loader, model, device, epoch, logger, file_logger, logger_test_name):
     # switch to evaluate mode
     model.eval()
-    
+
     pbar = tqdm(enumerate(test_loader))
-        # data for our data set: img,img,meta,meta,ID,ID,match
-        # data for Brown data  : img,img,match
-
-        # patchwise = len(data) < 7
-        # imgIDs_a = None if patchwise else data[4]
-        # img_a = data[0].to(device) if not imgIDs_a else dict(
-        #     zip(imgIDs_a, data[0]["img"]))  # create dictionary of images
-        # theta_a = None if patchwise else [
-        #     theta.float().to(device) for theta in data[2]#[0:-1]
-        # ]
-
-        # imgIDs_p = None if patchwise else data[5]
-        # img_p = data[1].to(device) if not imgIDs_p else dict(
-        #     zip(imgIDs_p, data[1]["img"]))  # create dictionary of images
-        # theta_p = None if patchwise else [
-        #     theta.float().to(device) for theta in data[3]#[0:-1]
-        # ]
-
-        # # get scale correction factor, orientation correction constant and check whether the second keypoint
-        # # falls on the anchor's image (in which case not to apply correction)
-        # # or on the paired image (requiring correction)
-        # # for test data, negative keypoints may be on the anchor's image or on
-        # # the paired image
-        # diffImg = None if patchwise else data[8]
-        # scaleCorrect = None if patchwise else 1 - diffImg + diffImg * \
-        #     data[9]  # set to correction factor if on different images, 0 else
-        # # set to correction factor if on different images, 0 else
-        # orientCorrect = None if patchwise else diffImg * data[10]
     if isinstance(test_loader.dataset, BlobinatorValidationData):
         num_tests = 0
         labels, distances = [], []
