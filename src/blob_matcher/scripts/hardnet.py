@@ -61,7 +61,7 @@ def create_train_loader(cfg):
         'pin_memory': cfg.TRAINING.PIN_MEMORY
     } if not cfg.TRAINING.NO_CUDA else {}
     if os.path.splitext(cfg.BLOBINATOR.DATASET_PATH)[1] == ".tracks":
-        transformer_dataset = BlobTrackData(cfg.BLOBINATOR.DATASET_PATH, sequences=cfg.TRAINING.SEQUENCES, include_untracked=True)
+        transformer_dataset = BlobTrackData(cfg.BLOBINATOR.DATASET_PATH, sequences=cfg.TRAINING.SEQUENCES, include_untracked=True, garbage_path=os.path.join(os.path.dirname(cfg.BLOBINATOR.DATASET_PATH), "train_garbage.npy"))
     elif os.path.isdir(os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training")):
         transformer_dataset = BlobinatorTrainingData(cfg, os.path.join(cfg.BLOBINATOR.DATASET_PATH, "training"))
     else:
