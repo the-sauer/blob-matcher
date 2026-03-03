@@ -246,7 +246,7 @@ def _load_all_sequences(f, sequences=None):
     they are globally unique across sequences.
     """
     seqs = f["sequences"]
-    seq_names = sequences if sequences is not None else list(seqs.keys())
+    seq_names = list(filter(lambda s: re.fullmatch("\\w+_([A-Fa-f0-9]+)", s)[1] in sequences, seqs.keys())) if sequences is not None else list(seqs.keys())
 
     all_patches = []
     all_track_ids = []
@@ -274,7 +274,7 @@ def _load_all_sequences(f, sequences=None):
 
 def load_untracked_patches(f, sequences=None):
     seqs = f["sequences"]
-    seq_names = sequences if sequences is not None else list(seqs.keys())
+    seq_names = list(filter(lambda s: re.fullmatch("\\w+_([A-Fa-f0-9]+)", s)[1] in sequences, seqs.keys())) if sequences is not None else list(seqs.keys())
     parts = []
     for name in seq_names:
         sg = seqs[name]
@@ -387,25 +387,30 @@ class BlobTrackData(torch.utils.data.Dataset):
 
 
 if __name__ == "__main__":
+    track_file = "../BlobBoards.jl/out/from_absolute_automatic_boards.tracks"
     train_sequences = []
     test_sequences = []
     val_sequences = []
-    with h5py.File("./data/tracks.tracks", "r") as f:
+    with h5py.File(track_file, "r") as f:
         for i, seq in enumerate(f["sequences"].keys()):
-            if i % 10 == 0:
-                test_sequences.append(seq)
-            elif i % 10 == 1:
-                val_sequences.append(seq)
-            else:
-                train_sequences.append(seq)
+            board_id = re.fullmatch("\\w+_([A-Fa-f0-9]+)", seq)[1]
 
-    print("TRAIN.SEQUENCES=", train_sequences)
-    print("TEST.SEQUENCES=", test_sequences)
-    print("VAL.SEQUENCES=", val_sequences)
+            if board_id not in test_sequences and board_id not in val_sequences and board_id not in train_sequences:
+                if i % 10 == 0:
+                    test_sequences.append(board_id)
+                elif i % 10 == 1:
+                    val_sequences.append(board_id)
+                else:
+                    train_sequences.append(board_id)
 
-    train_dataset = BlobTrackData("./data/tracks.tracks", sequences=train_sequences)
-    test_dataset = BlobTrackData("./data/tracks.tracks", sequences=test_sequences)
-    val_dataset = BlobTrackData("./data/tracks.tracks", sequences=val_sequences)
-    print(f"Train: {len(train_dataset)} patches, {train_dataset.n_classes} tracks")
-    print(f"Test: {len(test_dataset)} patches, {test_dataset.n_classes} tracks")
-    print(f"Val: {len(val_dataset)} patches, {val_dataset.n_classes} tracks")
+    # print("TRAIN.BOARDS =", train_sequences)
+    # print("TEST.BOARDS =", test_sequences)
+    # print("VAL.BOARDS =", val_sequences)
+
+    from blob_matcher.configs.defaults import _C as cfg
+
+    test_dataset = BlobTrackData(track_file, sequences=cfg.TEST.BOARDS, include_untracked=True)
+    # val_dataset = BlobTrackData(track_file, sequences=cfg.VALIDATION.BOARDS, include_untracked=True)
+    # train_dataset = BlobTrackData(track_file, sequences=cfg.TRAINING.BOARDS, include_untracked=True)
+
+    
