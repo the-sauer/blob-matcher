@@ -246,7 +246,7 @@ def _load_all_sequences(f, sequences=None):
     they are globally unique across sequences.
     """
     seqs = f["sequences"]
-    seq_names = list(filter(lambda s: re.fullmatch("\\w+_([A-Fa-f0-9]+)", s)[1] in sequences, seqs.keys())) if sequences is not None else list(seqs.keys())
+    seq_names = list(filter(lambda s: re.fullmatch("\\w+_([A-Fa-f0-9]+)\\)?", s)[1] in sequences, seqs.keys())) if sequences is not None else list(seqs.keys())
 
     all_patches = []
     all_track_ids = []
@@ -257,7 +257,7 @@ def _load_all_sequences(f, sequences=None):
         sg = seqs[name]
         g = sg["tracks"]
         patches = g["patches"][:]
-        track_ids = g["track_id"][:] + tid_offset
+        track_ids = g["track_id"][:]# + tid_offset
         track_lengths = g["track_lengths"][:]
         n_tracks = int(g["n_tracks"][()])
         all_patches.append(patches)
@@ -274,7 +274,7 @@ def _load_all_sequences(f, sequences=None):
 
 def load_untracked_patches(f, sequences=None):
     seqs = f["sequences"]
-    seq_names = list(filter(lambda s: re.fullmatch("\\w+_([A-Fa-f0-9]+)", s)[1] in sequences, seqs.keys())) if sequences is not None else list(seqs.keys())
+    seq_names = list(filter(lambda s: re.fullmatch("\\w+_([A-Fa-f0-9]+)\\)?", s)[1] in sequences, seqs.keys())) if sequences is not None else list(seqs.keys())
     parts = []
     for name in seq_names:
         sg = seqs[name]
@@ -311,16 +311,17 @@ class BlobTrackData(torch.utils.data.Dataset):
         with h5py.File(h5_path, "r") as f:
             all_patches, track_ids, track_lengths = _load_all_sequences(f, sequences)
 
-            # Identify valid tracks (long enough for positive pairs)
-            valid_set = set(
-                (np.where(track_lengths >= min_track_length)[0] + 1).tolist()
-            )  # track_ids are 1-based per sequence (offset applied)
+            # # Identify valid tracks (long enough for positive pairs)
+            # valid_set = set(
+            #     (np.where(track_lengths >= min_track_length)[0] + 1).tolist()
+            # )  # track_ids are 1-based per sequence (offset applied)
 
-            # Build mask of patches belonging to valid tracks
-            mask = np.isin(track_ids, list(valid_set))
+            # # Build mask of patches belonging to valid tracks
+            # mask = np.isin(track_ids, list(valid_set))
 
             if load_into_memory:
-                self.patches = all_patches[mask]
+                self.patches = all_patches
+                self.labels = track_ids.astype(np.uint32)
                 if include_untracked:
                     self.untracked_patches = load_untracked_patches(f, sequences)
                     if garbage_path:
@@ -346,25 +347,24 @@ class BlobTrackData(torch.utils.data.Dataset):
             else:
                 self._h5_path = h5_path
                 self._sequences = sequences
-                self._indices = np.where(mask)[0]
+                # self._indices = np.where(mask)[0]
                 self.patches = None
 
-            self._raw_labels = track_ids[mask]
+            # self._raw_labels = track_ids[mask]
 
         # Remap to contiguous 0-based labels
-        unique, inverse = np.unique(self._raw_labels, return_inverse=True)
-        self.labels = inverse.astype(np.int32)
-        self.n_classes = len(unique)
+        # unique, inverse = np.unique(self._raw_labels, return_inverse=True)
+        # self.labels = inverse.astype(np.int32)
+        # self.n_classes = len(unique)
         if include_untracked:
+            untracked_start_label = (self.labels[0] & 0xFFFF0000) + 0x00008000
             self.labels = np.concatenate([
                 self.labels,
-                np.arange(self.n_classes, self.n_classes + len(self.untracked_patches), dtype=self.labels.dtype)
+                np.arange(untracked_start_label, untracked_start_label + len(self.untracked_patches), dtype=self.labels.dtype)
             ])
 
-        n = len(self.labels)
         print(
-            f"BlobTrackDataset: {n} patches, {self.n_classes} tracks "
-            f"(filtered {mask.sum()}/{len(mask)}, min_length={min_track_length})"
+            f"BlobTrackDataset: {len(self.labels)} patches"
         )
 
     def __len__(self):
@@ -387,7 +387,7 @@ class BlobTrackData(torch.utils.data.Dataset):
 
 
 if __name__ == "__main__":
-    track_file = "../BlobBoards.jl/out/from_absolute_automatic_boards.tracks"
+    track_file = "../BlobBoards.jl/out/only_absolute.tracks"
     train_sequences = []
     test_sequences = []
     val_sequences = []
@@ -403,14 +403,20 @@ if __name__ == "__main__":
                 else:
                     train_sequences.append(board_id)
 
-    # print("TRAIN.BOARDS =", train_sequences)
-    # print("TEST.BOARDS =", test_sequences)
-    # print("VAL.BOARDS =", val_sequences)
+    print("TRAINING.BOARDS =", train_sequences)
+    print("TEST.BOARDS =", test_sequences)
+    print("VALIDATION.BOARDS =", val_sequences)
 
     from blob_matcher.configs.defaults import _C as cfg
 
     test_dataset = BlobTrackData(track_file, sequences=cfg.TEST.BOARDS, include_untracked=True)
-    # val_dataset = BlobTrackData(track_file, sequences=cfg.VALIDATION.BOARDS, include_untracked=True)
-    # train_dataset = BlobTrackData(track_file, sequences=cfg.TRAINING.BOARDS, include_untracked=True)
+    # for i, data in zip(range(100), test_dataset):
+    #     _, l = data
+    #     print(f"{i=}, {l=}")
 
-    
+    # with h5py.File(track_file, "r") as f:
+    #     patches, labels, lengths = _load_all_sequences(f)
+    # print(labels)
+    # print(lengths)
+    val_dataset = BlobTrackData(track_file, sequences=cfg.VALIDATION.BOARDS, include_untracked=True)
+    train_dataset = BlobTrackData(track_file, sequences=cfg.TRAINING.BOARDS, include_untracked=True)
